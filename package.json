@@ -13,7 +13,9 @@
     "start": "electron-vite preview --skipBuild",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:desktop": "pnpm build && node --test tests/desktop.mjs"
+    "test:desktop": "pnpm build && node --test tests/desktop.mjs",
+    "package:windows": "pnpm build && node scripts/package-windows.mjs",
+    "test:release": "node --test tests/packaged.mjs"
   },
   "dependencies": {
     "music-metadata": "12.4.0",

@@ -17,7 +17,7 @@ async function prepareElectron(t) {
   await copyFile(new URL('./fixtures/02-tone.flac', import.meta.url), join(fixtures, '02.flac'))
   await writeFile(join(fixtures, 'broken.mp3'), 'broken')
 
-  const entry = fileURLToPath(new URL('./electron-smoke.mjs', import.meta.url))
+  const entry = fileURLToPath(new URL('./run-electron-smoke.mjs', import.meta.url))
   const profile = join(directory, 'profile')
   const run = (phase) => promisify(execFile)(executable, [entry, fixtures, profile, phase], { timeout: 35_000 })
   return { fixtures, run }

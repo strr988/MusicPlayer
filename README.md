@@ -1,13 +1,17 @@
-# Music Player
+# Music Player 0.1.0
 
 Десктопный плеер для Windows. Первая сборка рекурсивно импортирует MP3 и FLAC из выбранных папок, показывает текстовые теги и проигрывает композиции в порядке библиотеки. Импорт аддитивный. Повторное чтение того же файла обновляет запись.
 
-## Запуск на Windows
+## Демонстрационная сборка для Windows x64
+
+Распакуйте `MusicPlayer-0.1.0-win-x64.zip` целиком и откройте **Music Player.exe**. В архиве есть Electron и папка **Demo audio** с двумя синтетическими треками. [Запуск, сборка и ручная проверка](docs/WINDOWS_RELEASE.md).
+
+## Запуск из исходников
 
 Нужны Node.js 24.22.x и pnpm 11.25.0. При отсутствии pnpm его можно установить через `npm install --global pnpm@11.25.0`.
 
 ```powershell
-pnpm install --frozen-lockfile
+pnpm install --frozen-lockfile --store-dir .pnpm-store
 pnpm exec install-electron
 pnpm build
 pnpm start
@@ -25,13 +29,19 @@ pnpm start
 
 ```powershell
 pnpm typecheck
+pnpm build
 pnpm test
 pnpm test:desktop
+pnpm package:windows
+pnpm test:release
 ```
 
 Vitest проверяет импорт, обход папок, выдачу аудио, миграции и повторное открытие базы. Десктопный тест открывает собранный Electron, подставляет ответ системного диалога и проверяет интерфейс, IPC, декодирование обоих форматов и перезапуск с тем же профилем. HTTP(S)-запросы Renderer блокируются. Тесту нужен интерактивный Windows-сеанс. Файлы в `tests/fixtures` — синтетические тоны 440 и 660 Гц длительностью 4 и 5 секунд с тестовыми тегами.
+
+`pnpm test:release` распаковывает готовый ZIP, открывает его EXE в новом временном профиле, проверяет «Волну» и переносит каталог программы перед вторым запуском. [Результаты релизной проверки](docs/RELEASE_AUDIT.md).
 
 - [Исходное техническое задание](docs/PROJECT_SPEC.md)
 - [Технический аудит и архитектура](docs/TECHNICAL_AUDIT.md)
 - [План и критерии приёмки](docs/MVP_PLAN.md)
 - [Реакции и история прослушивания](docs/LISTENING_FEEDBACK.md)
+- [Пилот и экспорт агрегатов](docs/PERSONAL_WAVE.md#экспорт-результатов-пилота)

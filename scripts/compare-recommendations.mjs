@@ -53,4 +53,11 @@ const results = Object.entries({ random: randomQueue, preferences: preferenceQue
       p95Ms: times[94],
     }
   })
-console.log(JSON.stringify({ seed: context.seed, now: context.now, requestedTracks: count, results }, null, 2))
+console.log(JSON.stringify({
+  kind: 'algorithm-benchmark',
+  input: snapshotPath ? 'provided-snapshot' : 'synthetic-example',
+  seed: context.seed,
+  now: context.now,
+  requestedTracks: count,
+  results,
+}, null, 2))

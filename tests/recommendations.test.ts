@@ -94,6 +94,20 @@ describe('recommendations', () => {
     }
   })
 
+  it('exhausts each eligible catalog even when all candidates have been heard', () => {
+    for (let size = 1; size <= 8; size++) {
+      const candidates = Array.from({ length: size }, (_, index) => track(String(index), 'A'))
+      const input = context([...candidates, track('unavailable', 'B', false)])
+      input.listening.events = input.candidates.map(({ id }) => event(id, 'started'))
+      for (const method of methods) {
+        const queue = method(input, 10)
+        expect(queue).toHaveLength(size)
+        expect(new Set(queue)).toEqual(new Set(candidates.map(({ id }) => id)))
+        expect(method({ ...input, candidates: input.candidates.toReversed() }, 10)).toEqual(queue)
+      }
+    }
+  })
+
   it('avoids adjacent known artists when an alternative is eligible', () => {
     const input = context([track('a1', 'A'), track('a2', 'A'), track('b1', 'B'), track('b2', 'B')])
     input.listening.preferences = [like('a1'), like('a2')]

@@ -1,15 +1,9 @@
 import assert from 'node:assert/strict'
-import { mkdirSync } from 'node:fs'
 import { readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, dialog } from 'electron'
-import '../out/main/index.js'
-
-const [folder, profile, phase] = process.argv.slice(2)
-mkdirSync(profile, { recursive: true })
-app.setPath('userData', profile)
 
 async function eventually(check, label) {
   const deadline = Date.now() + 8_000
@@ -21,7 +15,7 @@ async function eventually(check, label) {
   assert.fail(`Timed out waiting for ${label}`)
 }
 
-async function verify() {
+export async function verify(folder, profile, phase, preload = fileURLToPath(new URL('../out/preload/index.cjs', import.meta.url))) {
   await app.whenReady()
   const player = await eventually(() => BrowserWindow.getAllWindows()[0], 'Electron window')
   const { webContents } = player
@@ -126,7 +120,7 @@ async function verify() {
     show: false,
     webPreferences: {
       session,
-      preload: fileURLToPath(new URL('../out/preload/index.cjs', import.meta.url)),
+      preload,
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
@@ -219,8 +213,3 @@ async function verify() {
   }
   await writeFile(stateFile, JSON.stringify({ tracks, mp3, feedback }))
 }
-
-void verify().then(() => app.quit(), (error) => {
-  console.error(error)
-  app.exit(1)
-})
