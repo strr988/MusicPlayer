@@ -192,7 +192,7 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     await screenshot('0.6.0-download-analysis.png')
     await setInput('.download-fields input', title)
     await click('Скачать оригинал ' + format.toUpperCase())
-    const completed = await jobStatus('completed', 35_000)
+    const completed = await jobStatus('completed', 180_000)
     await waitFor('document.querySelector(".download-row")?.textContent.includes("Добавить в библиотеку")', 'completed job controls')
     await click('Добавить в библиотеку')
     await waitFor('document.querySelector(".download-row")?.textContent.includes("В библиотеке")', 'library integration')

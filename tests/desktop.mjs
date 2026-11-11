@@ -125,21 +125,23 @@ test('an abrupt Electron exit after importing a download preserves the Track ID,
     assert.equal(db.prepare('SELECT count(*) AS count FROM external_recordings').get().count, 1)
   })
 
+const archiveLiveOptions = { skip: !process.env.MUSIC_PLAYER_YTDLP_EXE, timeout: 340_000 }
+
 test('Archive.org downloads and plays an authorized original without FFmpeg, then restores the imported Track ID',
-  { skip: !process.env.MUSIC_PLAYER_YTDLP_EXE, timeout: 140_000 }, async t => {
+  archiveLiveOptions, async t => {
     const { profile, run } = await prepareElectron(t)
     await mkdir(join(profile, 'tools'), { recursive: true })
     await copyFile(process.env.MUSIC_PLAYER_YTDLP_EXE, join(profile, 'tools', 'yt-dlp.exe'))
-    await run('downloads-live', 100_000)
+    await run('downloads-live', 300_000)
     await run('downloads-restart')
   })
 
 test('Archive.org rejects an album and downloads, plays and restores the selected authorized FLAC track',
-  { skip: !process.env.MUSIC_PLAYER_YTDLP_EXE, timeout: 140_000 }, async t => {
+  archiveLiveOptions, async t => {
     const { profile, run } = await prepareElectron(t)
     await mkdir(join(profile, 'tools'), { recursive: true })
     await copyFile(process.env.MUSIC_PLAYER_YTDLP_EXE, join(profile, 'tools', 'yt-dlp.exe'))
-    await run('downloads-live-flac', 100_000)
+    await run('downloads-live-flac', 300_000)
     await run('downloads-restart')
   })
 
