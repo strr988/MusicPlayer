@@ -44,7 +44,7 @@ it('migrates an existing v1 library, retaining IDs, likes, cancellation and hist
   expect(() => store!.setTrackPreference(randomUUID(), true)).toThrow()
   expect(() => store!.recordPlaybackEvent({ ...started, trackId: randomUUID() })).toThrow(/mismatch/)
   using db = new DatabaseSync(path)
-  expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 3 })
+  expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 4 })
   expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
 })
 
@@ -68,13 +68,14 @@ it('adds volume to a v2 database while preserving existing listening data', asyn
   const sessionId = randomUUID()
   {
     using db = new DatabaseSync(path)
-    db.exec('DROP TABLE playback_volume; PRAGMA user_version = 2')
+    db.exec('DROP TABLE wave_settings; DROP TABLE playlist_items; DROP TABLE playlists; DROP TABLE playback_volume; PRAGMA user_version = 2')
     db.prepare("INSERT INTO tracks VALUES (?, 'Tone', NULL, NULL, 10, '[]', 'mp3')").run(trackId)
     db.prepare('INSERT INTO track_preferences VALUES (?, 1, ?)').run(trackId, '2026-11-10T12:00:00Z')
     db.prepare("INSERT INTO playback_events VALUES (?, ?, 'started', 0, ?)").run(sessionId, trackId, '2026-11-10T12:00:01Z')
   }
   store = new LibraryStore(path)
   expect(store.getVolume()).toEqual({ level: 1, muted: false })
+  expect(store.getWaveMode()).toBe('balance')
   expect(store.getListeningData().preferences[0]).toMatchObject({ trackId, liked: true })
   expect(store.getListeningData().events[0]).toMatchObject({ sessionId, trackId, type: 'started' })
   store.setVolume({ level: 0.37, muted: true })

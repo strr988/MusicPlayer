@@ -4,6 +4,15 @@ import type { MusicPlayerApi } from '../shared/contracts'
 
 const api: MusicPlayerApi = {
   getWaveQueue: () => ipcRenderer.invoke(channels.getWaveQueue),
+  getWaveMode: () => ipcRenderer.invoke(channels.getWaveMode),
+  setWaveMode: (mode) => ipcRenderer.invoke(channels.setWaveMode, mode),
+  getPlaylists: () => ipcRenderer.invoke(channels.getPlaylists),
+  createPlaylist: (name) => ipcRenderer.invoke(channels.createPlaylist, name),
+  renamePlaylist: (id, name) => ipcRenderer.invoke(channels.renamePlaylist, id, name),
+  deletePlaylist: (id) => ipcRenderer.invoke(channels.deletePlaylist, id),
+  addPlaylistTrack: (id, trackId) => ipcRenderer.invoke(channels.addPlaylistTrack, id, trackId),
+  removePlaylistTrack: (id, trackId) => ipcRenderer.invoke(channels.removePlaylistTrack, id, trackId),
+  movePlaylistTrack: (id, trackId, offset) => ipcRenderer.invoke(channels.movePlaylistTrack, id, trackId, offset),
   getListeningData: () => ipcRenderer.invoke(channels.getListeningData),
   setTrackPreference: (trackId, liked) => ipcRenderer.invoke(channels.setTrackPreference, trackId, liked),
   recordPlaybackEvent: (event) => ipcRenderer.invoke(channels.recordPlaybackEvent, event),

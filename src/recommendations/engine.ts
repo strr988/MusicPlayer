@@ -1,4 +1,4 @@
-import type { ListeningData, Track } from '../shared/contracts'
+import type { ListeningData, Track, WaveMode } from '../shared/contracts'
 
 export interface RecommendationCandidate extends Pick<Track, 'id' | 'artist' | 'genres'> {
   available: boolean
@@ -9,11 +9,13 @@ export interface RecommendationContext {
   listening: ListeningData
   now: number
   seed: number
+  mode?: WaveMode
 }
 
 export type RecommendationEngine = (context: RecommendationContext, count: number) => string[]
 
 const historyWindowMs = 30 * 24 * 60 * 60 * 1000
+const explorationChance: Record<WaveMode, number> = { familiar: 0, balance: 0.2, discovery: 0.8 }
 export const artistKey = (artist: string | null) => artist?.trim().normalize('NFC').toLowerCase() || undefined
 
 function randomFrom(seed: number): () => number {
@@ -109,6 +111,7 @@ export const generateWave: RecommendationEngine = (context, count) => {
   const recentLimit = Math.min(5, available.length - 1)
   let recent = heard.map(([id]) => id).filter(id => availableIds.has(id)).slice(0, recentLimit)
   const explore = randomFrom(context.seed ^ 0x9e3779b9)
+  const chance = explorationChance[context.mode ?? 'balance']
   const queue: string[] = []
   while (queue.length < limit) {
     // Relax the oldest exclusions first if only recently played tracks remain.
@@ -119,7 +122,7 @@ export const generateWave: RecommendationEngine = (context, count) => {
     }
     const differentArtist = pool.filter(track => track.artist !== previousArtist || !previousArtist)
     const diverse = differentArtist.length > 0 ? differentArtist : pool
-    const next = (explore() < 0.2 ? diverse.find(track => track.unheard) : undefined) ?? diverse[0]
+    const next = (explore() < chance ? diverse.find(track => track.unheard) : undefined) ?? diverse[0]
     queue.push(next.id)
     ranked.splice(ranked.indexOf(next), 1)
     recent = [next.id, ...recent.filter(id => id !== next.id)].slice(0, recentLimit)

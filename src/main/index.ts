@@ -4,8 +4,8 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, dialog, ipcMain, net, protocol, session } from 'electron'
 import type { IpcMainInvokeEvent } from 'electron'
-import { channels, playerOrigin } from '../shared/contracts'
-import type { ImportResult } from '../shared/contracts'
+import { channels, playerOrigin, playlistNameLimit, waveModes } from '../shared/contracts'
+import type { ImportResult, WaveMode } from '../shared/contracts'
 import { Library } from './library'
 import { serveMedia } from './media'
 import { Artwork } from './artwork'
@@ -13,7 +13,7 @@ import { validatePlaybackEvent, validatePreference } from './feedback-validation
 import { generateWave } from '../recommendations/engine'
 
 const scheme = 'music-player'
-const trackIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const idPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 protocol.registerSchemesAsPrivileged([{
   scheme,
   privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true },
@@ -37,6 +37,17 @@ function senderWindow(event: IpcMainInvokeEvent): BrowserWindow {
   return window
 }
 
+function playlistId(value: unknown): string {
+  if (typeof value !== 'string' || value.length !== 36 || !idPattern.test(value)) throw new Error('Invalid playlist or track ID')
+  return value
+}
+
+function playlistName(value: unknown): string {
+  if (typeof value !== 'string' || value.length > playlistNameLimit ||
+      !value.trim() || /[\u0000-\u001f\u007f]/.test(value)) throw new Error('Invalid playlist name')
+  return value.trim()
+}
+
 async function chooseFolder(owner: BrowserWindow, library: Library): Promise<ImportResult> {
   try {
     const selection = await dialog.showOpenDialog(owner, {
@@ -55,7 +66,48 @@ function registerIpc(library: Library): void {
     senderWindow(event)
     if (args.length !== 0) throw new Error('Unexpected wave arguments')
     const candidates = await library.getRecommendationCandidates()
-    return generateWave({ candidates, listening: library.getListeningData(), now: Date.now(), seed: randomInt(2 ** 32) }, 10)
+    return generateWave({
+      candidates, listening: library.getListeningData(), now: Date.now(),
+      seed: randomInt(2 ** 32), mode: library.getWaveMode(),
+    }, 10)
+  })
+  ipcMain.handle(channels.getWaveMode, (event) => {
+    senderWindow(event)
+    return library.getWaveMode()
+  })
+  ipcMain.handle(channels.setWaveMode, (event, mode: unknown) => {
+    senderWindow(event)
+    if (!waveModes.includes(mode as WaveMode)) throw new Error('Invalid wave mode')
+    library.setWaveMode(mode as WaveMode)
+  })
+  ipcMain.handle(channels.getPlaylists, (event) => {
+    senderWindow(event)
+    return library.getPlaylists()
+  })
+  ipcMain.handle(channels.createPlaylist, (event, name: unknown) => {
+    senderWindow(event)
+    return library.createPlaylist(playlistName(name))
+  })
+  ipcMain.handle(channels.renamePlaylist, (event, id: unknown, name: unknown) => {
+    senderWindow(event)
+    library.renamePlaylist(playlistId(id), playlistName(name))
+  })
+  ipcMain.handle(channels.deletePlaylist, (event, id: unknown) => {
+    senderWindow(event)
+    library.deletePlaylist(playlistId(id))
+  })
+  ipcMain.handle(channels.addPlaylistTrack, (event, id: unknown, trackId: unknown) => {
+    senderWindow(event)
+    return library.addPlaylistTrack(playlistId(id), playlistId(trackId))
+  })
+  ipcMain.handle(channels.removePlaylistTrack, (event, id: unknown, trackId: unknown) => {
+    senderWindow(event)
+    return library.removePlaylistTrack(playlistId(id), playlistId(trackId))
+  })
+  ipcMain.handle(channels.movePlaylistTrack, (event, id: unknown, trackId: unknown, offset: unknown) => {
+    senderWindow(event)
+    if (offset !== -1 && offset !== 1) throw new Error('Invalid playlist move')
+    return library.movePlaylistTrack(playlistId(id), playlistId(trackId), offset)
   })
   ipcMain.handle(channels.getListeningData, (event) => {
     senderWindow(event)
@@ -76,13 +128,14 @@ function registerIpc(library: Library): void {
     pendingImport ??= chooseFolder(owner, library).finally(() => { pendingImport = undefined })
     return pendingImport
   })
-  ipcMain.handle(channels.getTracks, (event) => {
+  ipcMain.handle(channels.getTracks, async (event) => {
     senderWindow(event)
+    await library.refreshAvailability()
     return library.getTracks()
   })
   ipcMain.handle(channels.getPlayableSource, async (event, trackId: unknown) => {
     senderWindow(event)
-    if (typeof trackId !== 'string' || !trackIdPattern.test(trackId)) return null
+    if (typeof trackId !== 'string' || !idPattern.test(trackId)) return null
     const sourceId = library.getSourceId(trackId)
     const source = sourceId && await library.getAvailableSource(sourceId)
     return source ? { url: `${playerOrigin}/audio/${source.id}` } : null
@@ -112,7 +165,6 @@ async function start(): Promise<void> {
   const library = new Library(join(userData, 'library.sqlite3'))
   const artwork = new Artwork(library)
   app.once('will-quit', () => library.close())
-  await library.refreshAvailability()
 
   const playerSession = session.fromPartition('music-player')
   playerSession.setPermissionRequestHandler((_contents, _permission, reply) => reply(false))
@@ -137,11 +189,11 @@ async function start(): Promise<void> {
     }
     if (url.pathname.startsWith('/audio/')) {
       const id = url.pathname.slice('/audio/'.length)
-      return trackIdPattern.test(id) ? serveMedia(request, library, id) : new Response(null, { status: 404 })
+      return idPattern.test(id) ? serveMedia(request, library, id) : new Response(null, { status: 404 })
     }
     if (url.pathname.startsWith('/artwork/')) {
       const id = url.pathname.slice('/artwork/'.length)
-      return trackIdPattern.test(id) ? artwork.serve(request, id) : new Response(null, { status: 404 })
+      return idPattern.test(id) ? artwork.serve(request, id) : new Response(null, { status: 404 })
     }
     const asset = assets.get(url.pathname)
     return asset ? net.fetch(asset.href, { method: request.method }) : new Response(null, { status: 404 })

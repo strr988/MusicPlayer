@@ -47,19 +47,29 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     input.dispatchEvent(new Event('input', { bubbles: true }))
   })()`)
   const search = value => setInput('input[type=search]', value)
+  const choose = (label, value) => run(`(() => {
+    const select = document.querySelector(${JSON.stringify(`select[aria-label="${label}"]`)})
+    select.value = ${JSON.stringify(value)}
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+  })()`)
 
   await waitFor('document.querySelector("h1")?.innerText === "Библиотека"', 'library UI')
   assert.equal(webContents.getURL(), 'music-player://app/')
   const { sandbox, contextIsolation, nodeIntegration } = webContents.getLastWebPreferences()
   assert.deepEqual({ sandbox, contextIsolation, nodeIntegration }, { sandbox: true, contextIsolation: true, nodeIntegration: false })
+  const oldApi = [
+    'getListeningData', 'getPlayableSource', 'getTracks', 'getVolume', 'getWaveQueue',
+    'importFolder', 'recordPlaybackEvent', 'setTrackPreference', 'setVolume',
+  ]
+  const expectedApi = phase === 'legacy-import' ? oldApi : oldApi.concat([
+    'addPlaylistTrack', 'createPlaylist', 'deletePlaylist', 'getPlaylists', 'getWaveMode',
+    'movePlaylistTrack', 'removePlaylistTrack', 'renamePlaylist', 'setWaveMode',
+  ]).sort()
   assert.deepEqual(await run(`({
     process: typeof window.process,
     require: typeof window.require,
     api: Object.keys(window.musicPlayer).sort()
-  })`), { process: 'undefined', require: 'undefined', api: [
-    'getListeningData', 'getPlayableSource', 'getTracks', 'getVolume', 'getWaveQueue',
-    'importFolder', 'recordPlaybackEvent', 'setTrackPreference', 'setVolume',
-  ] })
+  })`), { process: 'undefined', require: 'undefined', api: expectedApi })
 
   const session = webContents.session
   session.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*'] }, (_request, reply) => reply({ cancel: true }))
@@ -72,7 +82,7 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
   }
   const advancing = '!audio.paused && audio.currentTime > 0.2'
   const stateFile = join(profile, 'smoke-state.json')
-  if (phase === 'wave-import') {
+  if (phase === 'wave-import' || phase === 'legacy-import') {
     assert.equal(await run(`${buttons}.find(button => button.innerText === 'Моя волна').disabled`), true)
     assert.deepEqual(await run('window.musicPlayer.getWaveQueue()'), [])
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] })
@@ -115,7 +125,20 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     assert.ok(feedback.events.some(event => event.type === 'completed' && event.trackId === mp3Id))
     await click('Без звука')
     await waitFor('(async () => (await window.musicPlayer.getVolume()).muted)()', 'mute preference saved')
-    await writeFile(stateFile, JSON.stringify({ mp3Id, mp3, feedback }))
+    await writeFile(stateFile, JSON.stringify({ tracks, mp3Id, mp3, feedback }))
+    return
+  }
+  if (phase === 'verify-upgrade') {
+    const { tracks, feedback } = JSON.parse(await readFile(stateFile, 'utf8'))
+    assert.deepEqual(await run('window.musicPlayer.getTracks()'), tracks.map(track => ({ ...track, available: true })))
+    assert.deepEqual(await run('window.musicPlayer.getListeningData()'), feedback)
+    assert.deepEqual(await run('window.musicPlayer.getVolume()'), { level: 0.37, muted: true })
+    assert.equal(await run('window.musicPlayer.getWaveMode()'), 'balance')
+    assert.deepEqual(await run('window.musicPlayer.getPlaylists()'), [])
+    await waitFor('document.querySelector("audio").muted && document.querySelector("audio").volume === 0.37', 'migrated volume in player')
+    await waitFor(`!${buttons}.find(button => button.innerText === 'Моя волна').disabled`, 'migrated Wave controls ready')
+    await click('Моя волна')
+    await waitForAudio(`${advancing} && audio.muted`, 'migrated library plays in Balance')
     return
   }
   if (phase === 'wave-restart') {
@@ -143,7 +166,8 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
   if (phase === 'restart') {
     const { tracks, mp3, feedback } = JSON.parse(await readFile(stateFile, 'utf8'))
     await waitFor('document.querySelectorAll("tbody tr").length === 2', 'restored library UI')
-    assert.deepEqual(await run('window.musicPlayer.getTracks()'), tracks)
+    const available = tracks.map(track => ({ ...track, available: track.format !== 'flac' }))
+    assert.deepEqual(await run('window.musicPlayer.getTracks()'), available)
     assert.deepEqual(await run('window.musicPlayer.getListeningData()'), feedback)
     await waitFor(`document.querySelector('button[aria-label="Лайк: Test Tone MP3"]')?.getAttribute("aria-pressed") === "true"`, 'restored like')
     const flacId = tracks.find(({ format }) => format === 'flac').id
@@ -152,7 +176,89 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     await waitForAudio(`${advancing} && audio.src === ${JSON.stringify(mp3)}`, 'restored MP3 playback')
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] })
     const rescan = await run('window.musicPlayer.importFolder()')
-    assert.deepEqual(rescan, { status: 'complete', tracks, processed: 1, issues: [{ entry: 'broken.mp3', reason: 'file-unreadable' }] })
+    assert.deepEqual(rescan, { status: 'complete', tracks: available, processed: 1, issues: [{ entry: 'broken.mp3', reason: 'file-unreadable' }] })
+    return
+  }
+  if (phase === 'playlist-import') {
+    const waveSelector = 'select[aria-label="Режим «Моей волны»"]'
+    await waitFor(`document.querySelector('${waveSelector}').value === 'balance'`, 'default Balance mode')
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] })
+    await click('Выбрать папку')
+    await waitFor('document.querySelectorAll("tbody tr").length === 2', 'catalog for playlists')
+    const tracks = await run('window.musicPlayer.getTracks()')
+    const mp3Id = tracks.find(track => track.format === 'mp3').id
+    const flacId = tracks.find(track => track.format === 'flac').id
+    for (const mode of ['familiar', 'balance', 'discovery']) {
+      await choose('Режим «Моей волны»', mode)
+      await waitFor(`document.querySelector('${waveSelector}').value === '${mode}' &&
+        !document.querySelector('${waveSelector}').disabled`, `${mode} setting acknowledged`)
+      assert.equal(await run('window.musicPlayer.getWaveMode()'), mode)
+      assert.deepEqual(new Set(await run('window.musicPlayer.getWaveQueue()')), new Set([mp3Id, flacId]))
+    }
+    await click('Плейлисты')
+    await waitFor('document.querySelector("#playlist-heading").offsetWidth > 0', 'playlists section')
+    await click('Создать плейлист')
+    await setInput('input[aria-label="Название плейлиста"]', '  В дороге  ')
+    await click('Сохранить')
+    await waitFor('document.querySelector(\'select[aria-label="Выбрать плейлист"] option\')?.text === "В дороге"', 'playlist created')
+    await click('Переименовать')
+    await setInput('input[aria-label="Название плейлиста"]', 'Два тона')
+    await click('Сохранить')
+    await waitFor('document.querySelector(\'select[aria-label="Выбрать плейлист"] option\').text === "Два тона"', 'playlist renamed')
+    for (const [index, id] of [mp3Id, flacId].entries()) {
+      await choose('Трек для добавления', id)
+      await click('Добавить')
+      await waitFor(`document.querySelectorAll('.playlist-track').length === ${index + 1}`, 'track added from library')
+    }
+    const [playlist] = await run('window.musicPlayer.getPlaylists()')
+    const duplicate = await run(`window.musicPlayer.addPlaylistTrack('${playlist.id}', '${mp3Id}')`)
+    assert.deepEqual(duplicate.trackIds, [mp3Id, flacId])
+    await click('Выше: Test Tone FLAC')
+    await waitFor('document.querySelector(".playlist-track").innerText.includes("FLAC")', 'playlist reordered')
+    const newOrder = await run('window.musicPlayer.getPlaylists()')
+    assert.deepEqual(newOrder, [{ ...playlist, trackIds: [flacId, mp3Id] }])
+    player.setSize(620, 520)
+    await waitFor('innerWidth <= 620', 'compact playlist window')
+    assert.equal(await run(`[document.querySelector('main'), document.querySelector('footer')].every(
+      element => element.scrollWidth <= element.clientWidth)`), true)
+
+    await click('Воспроизвести плейлист')
+    const flac = await waitForAudio(`${advancing} && audio.duration === 5`, 'playlist starts at FLAC after reorder')
+    await click('Следующий трек')
+    const mp3 = await waitForAudio(`${advancing} && audio.src !== '${flac}'`, 'playlist next plays MP3')
+    await click('Предыдущий трек')
+    await waitForAudio(`${advancing} && audio.src === '${flac}'`, 'playlist previous plays FLAC')
+    await waitForAudio(`${advancing} && audio.src === '${mp3}'`, 'playlist advances at natural end')
+    assert.equal(await run('document.querySelectorAll("audio").length'), 1)
+    await rm(join(folder, '02.flac'))
+    await click('Воспроизвести плейлист')
+    await waitFor('document.querySelector(".playlist-track").innerText.includes("Файл недоступен")', 'playlist notices lost source while open')
+    await waitForAudio(`${advancing} && audio.src === '${mp3}'`, 'playlist skips lost FLAC')
+    assert.equal(await run('document.querySelector(\'button[aria-label="Предыдущий трек"]\').disabled'), true)
+    await writeFile(stateFile, JSON.stringify({ playlist: newOrder[0], mp3, flacId }))
+    return
+  }
+  if (phase === 'playlist-restart') {
+    const { playlist, mp3, flacId } = JSON.parse(await readFile(stateFile, 'utf8'))
+    await waitFor('document.querySelector(\'select[aria-label="Режим «Моей волны»"]\').value === "discovery"', 'restored Wave mode')
+    await waitFor('!document.querySelector(\'nav button:last-child\').disabled', 'restored library')
+    await click('Плейлисты')
+    await waitFor('document.querySelector(".playlist-track")?.innerText.includes("Файл недоступен")', 'restored unavailable first track')
+    assert.deepEqual(await run('window.musicPlayer.getPlaylists()'), [playlist])
+    await click('Воспроизвести плейлист')
+    await waitForAudio(`${advancing} && audio.src === '${mp3}'`, 'restored playlist playback')
+    await click('Убрать из плейлиста: Test Tone MP3')
+    await waitFor('document.querySelectorAll(".playlist-track").length === 1', 'track removed from playlist')
+    assert.deepEqual(await run('window.musicPlayer.getPlaylists()'), [{ ...playlist, trackIds: [flacId] }])
+    assert.equal(await run(`${buttons}.find(button => button.innerText === 'Воспроизвести плейлист').disabled`), true)
+    await click('Удалить плейлист')
+    await click('Отмена')
+    assert.equal((await run('window.musicPlayer.getPlaylists()')).length, 1)
+    await click('Удалить плейлист')
+    await click('Подтвердить удаление')
+    await waitFor('!document.querySelector(\'select[aria-label="Выбрать плейлист"]\')', 'playlist removed after confirmation')
+    assert.deepEqual(await run('window.musicPlayer.getPlaylists()'), [])
+    assert.equal((await run('window.musicPlayer.getTracks()')).length, 2)
     return
   }
 
@@ -170,7 +276,9 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     await otherWindow.loadURL(webContents.getURL())
     const refusals = await otherWindow.webContents.executeJavaScript(`Promise.all(
       [window.musicPlayer.getTracks(), window.musicPlayer.getWaveQueue(),
-        window.musicPlayer.getVolume(), window.musicPlayer.setVolume(0, true)]
+        window.musicPlayer.getVolume(), window.musicPlayer.setVolume(0, true),
+        window.musicPlayer.getPlaylists(), window.musicPlayer.createPlaylist('test'),
+        window.musicPlayer.getWaveMode(), window.musicPlayer.setWaveMode('discovery')]
         .map(result => result.then(() => 'unexpectedly accepted', error => error.message))
     )`)
     for (const refusal of refusals) assert.match(refusal, /IPC sender denied/)
@@ -218,6 +326,12 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
   for (const input of ['NaN, true', '1.01, false', '0.5, "true"']) {
     assert.match(await run(`window.musicPlayer.setVolume(${input}).then(() => 'accepted', e => e.message)`), /Invalid volume/)
   }
+  for (const operation of [
+    'createPlaylist("   ")', 'createPlaylist("a".repeat(101))', 'deletePlaylist("C:/Windows/win.ini")',
+    'movePlaylistTrack("bad", "bad", 2)', 'setWaveMode("unknown")',
+  ]) {
+    assert.match(await run(`window.musicPlayer.${operation}.then(() => 'accepted', e => e.message)`), /Invalid/)
+  }
   player.setSize(620, 520)
   await waitFor('innerWidth <= 620', 'compact Windows window')
   assert.equal(await run(`[document.querySelector('main'), document.querySelector('footer')].every(
@@ -229,7 +343,7 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
   await search('FIXTURE ALBUM')
   await waitFor('document.querySelectorAll("tbody tr").length === 2', 'album search')
   await run(`(() => {
-    const sort = document.querySelector('select')
+    const sort = document.querySelector('.sort-control select')
     sort.value = 'durationSeconds'
     sort.dispatchEvent(new Event('change', { bubbles: true }))
   })()`)

@@ -1,6 +1,7 @@
+import { randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
-import { playerOrigin } from '../shared/contracts'
-import type { Track, LibraryTrack, ListeningData, ListeningDataReader, PlaybackEventInput, TrackPreference, VolumePreference } from '../shared/contracts'
+import { playerOrigin, playlistNameLimit } from '../shared/contracts'
+import type { Track, LibraryTrack, ListeningData, ListeningDataReader, PlaybackEventInput, Playlist, TrackPreference, VolumePreference, WaveMode } from '../shared/contracts'
 import type { FileIdentity } from './local-file'
 
 const migrations = [
@@ -51,6 +52,22 @@ const migrations = [
     muted INTEGER NOT NULL CHECK (muted IN (0, 1))
   ) STRICT;
   INSERT INTO playback_volume VALUES (1, 1, 0);`,
+  `CREATE TABLE playlists (
+    id TEXT PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND ${playlistNameLimit})
+  ) STRICT;
+  CREATE TABLE playlist_items (
+    playlist_id TEXT NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+    track_id TEXT NOT NULL REFERENCES tracks(id),
+    position INTEGER NOT NULL CHECK (position >= 0),
+    PRIMARY KEY (playlist_id, track_id),
+    UNIQUE (playlist_id, position)
+  ) STRICT;
+  CREATE TABLE wave_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    mode TEXT NOT NULL CHECK (mode IN ('familiar', 'balance', 'discovery'))
+  ) STRICT;
+  INSERT INTO wave_settings VALUES (1, 'balance');`,
 ]
 
 export interface LocalSource {
@@ -167,14 +184,97 @@ export class LibraryStore implements ListeningDataReader {
     this.db.prepare('UPDATE playback_volume SET level = ?, muted = ? WHERE id = 1').run(level, Number(muted))
   }
 
+  getWaveMode(): WaveMode {
+    const { mode } = this.db.prepare('SELECT mode FROM wave_settings WHERE id = 1').get() as { mode: WaveMode }
+    return mode
+  }
+
+  setWaveMode(mode: WaveMode): void {
+    this.db.prepare('UPDATE wave_settings SET mode = ? WHERE id = 1').run(mode)
+  }
+
+  getPlaylists(): Playlist[] {
+    const rows = this.db.prepare(`SELECT p.id, p.name, i.track_id AS trackId
+      FROM playlists p LEFT JOIN playlist_items i ON i.playlist_id = p.id
+      ORDER BY p.rowid, i.position`).all() as { id: string; name: string; trackId: string | null }[]
+    const playlists = new Map<string, Playlist>()
+    for (const { id, name, trackId } of rows) {
+      let playlist = playlists.get(id)
+      if (!playlist) {
+        playlist = { id, name, trackIds: [] }
+        playlists.set(id, playlist)
+      }
+      if (trackId !== null) playlist.trackIds.push(trackId)
+    }
+    return [...playlists.values()]
+  }
+
+  createPlaylist(name: string): Playlist {
+    const id = randomUUID()
+    this.db.prepare('INSERT INTO playlists (id, name) VALUES (?, ?)').run(id, name)
+    return { id, name, trackIds: [] }
+  }
+
+  renamePlaylist(id: string, name: string): void {
+    const result = this.db.prepare('UPDATE playlists SET name = ? WHERE id = ?').run(name, id)
+    if (!result.changes) throw new Error('Playlist not found')
+  }
+
+  deletePlaylist(id: string): void {
+    this.db.prepare('DELETE FROM playlists WHERE id = ?').run(id)
+  }
+
+  addPlaylistTrack(id: string, trackId: string): Playlist {
+    this.db.prepare(`INSERT INTO playlist_items (playlist_id, track_id, position)
+      SELECT ?, ?, COALESCE(MAX(position) + 1, 0) FROM playlist_items WHERE playlist_id = ?
+      ON CONFLICT (playlist_id, track_id) DO NOTHING`).run(id, trackId, id)
+    return this.getPlaylist(id)
+  }
+
+  removePlaylistTrack(id: string, trackId: string): Playlist {
+    this.db.prepare('DELETE FROM playlist_items WHERE playlist_id = ? AND track_id = ?').run(id, trackId)
+    return this.getPlaylist(id)
+  }
+
+  movePlaylistTrack(id: string, trackId: string, offset: -1 | 1): Playlist {
+    return this.transaction(() => {
+      const playlist = this.getPlaylist(id)
+      const index = playlist.trackIds.indexOf(trackId)
+      if (index < 0) throw new Error('Playlist track not found')
+      const neighbor = playlist.trackIds[index + offset]
+      if (!neighbor) return playlist
+      const position = this.db.prepare('SELECT position FROM playlist_items WHERE playlist_id = ? AND track_id = ?')
+      const from = position.get(id, trackId)!.position as number
+      const to = position.get(id, neighbor)!.position as number
+      const move = this.db.prepare('UPDATE playlist_items SET position = ? WHERE playlist_id = ? AND track_id = ?')
+      const { spare } = this.db.prepare('SELECT MAX(position) + 1 AS spare FROM playlist_items WHERE playlist_id = ?')
+        .get(id) as { spare: number }
+      // Use a free position to preserve the unique constraint during the swap.
+      move.run(spare, id, trackId)
+      move.run(from, id, neighbor)
+      move.run(to, id, trackId)
+      return this.getPlaylist(id)
+    })
+  }
+
+  private getPlaylist(id: string): Playlist {
+    const playlist = this.db.prepare('SELECT name FROM playlists WHERE id = ?').get(id) as { name: string } | undefined
+    if (!playlist) throw new Error('Playlist not found')
+    const rows = this.db.prepare('SELECT track_id FROM playlist_items WHERE playlist_id = ? ORDER BY position')
+      .all(id) as { track_id: string }[]
+    return { id, name: playlist.name, trackIds: rows.map(row => row.track_id) }
+  }
+
   getTracks(): LibraryTrack[] {
     const rows = this.db.prepare(`SELECT t.id, title, artist, album, duration_seconds AS durationSeconds,
-      genres, format, (SELECT id FROM sources WHERE track_id = t.id AND provider = 'local'
+      genres, format, EXISTS (SELECT 1 FROM sources WHERE track_id = t.id AND provider = 'local' AND available = 1) AS available,
+      (SELECT id FROM sources WHERE track_id = t.id AND provider = 'local'
         ORDER BY available DESC, rowid LIMIT 1) AS sourceId FROM tracks t ORDER BY t.rowid`)
-      .all() as unknown as (Omit<Track, 'genres'> & { genres: string; sourceId: string | null })[]
-    return rows.map(({ sourceId, genres, ...row }) => ({
+      .all() as unknown as (Omit<Track, 'genres'> & { genres: string; sourceId: string | null; available: number })[]
+    return rows.map(({ sourceId, genres, available, ...row }) => ({
       ...row, genres: JSON.parse(genres) as string[],
       artworkUrl: sourceId ? `${playerOrigin}/artwork/${sourceId}` : null,
+      available: available === 1,
     }))
   }
 

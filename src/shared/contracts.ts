@@ -1,5 +1,14 @@
 export const channels = {
   getWaveQueue: 'recommendations:get-wave-queue',
+  getWaveMode: 'recommendations:get-mode',
+  setWaveMode: 'recommendations:set-mode',
+  getPlaylists: 'playlists:get',
+  createPlaylist: 'playlists:create',
+  renamePlaylist: 'playlists:rename',
+  deletePlaylist: 'playlists:delete',
+  addPlaylistTrack: 'playlists:add-track',
+  removePlaylistTrack: 'playlists:remove-track',
+  movePlaylistTrack: 'playlists:move-track',
   getListeningData: 'feedback:get-data',
   setTrackPreference: 'feedback:set-preference',
   recordPlaybackEvent: 'feedback:record-event',
@@ -24,6 +33,17 @@ export interface Track {
 
 export interface LibraryTrack extends Track {
   artworkUrl: string | null
+  available: boolean
+}
+
+export const waveModes = ['familiar', 'balance', 'discovery'] as const
+export type WaveMode = typeof waveModes[number]
+
+export const playlistNameLimit = 100
+export interface Playlist {
+  id: string
+  name: string
+  trackIds: string[]
 }
 
 export interface ImportIssue {
@@ -63,6 +83,15 @@ export interface ListeningDataReader { getListeningData(): ListeningData }
 
 export interface MusicPlayerApi {
   getWaveQueue(): Promise<string[]>
+  getWaveMode(): Promise<WaveMode>
+  setWaveMode(mode: WaveMode): Promise<void>
+  getPlaylists(): Promise<Playlist[]>
+  createPlaylist(name: string): Promise<Playlist>
+  renamePlaylist(id: string, name: string): Promise<void>
+  deletePlaylist(id: string): Promise<void>
+  addPlaylistTrack(id: string, trackId: string): Promise<Playlist>
+  removePlaylistTrack(id: string, trackId: string): Promise<Playlist>
+  movePlaylistTrack(id: string, trackId: string, offset: -1 | 1): Promise<Playlist>
   getListeningData(): Promise<ListeningData>
   setTrackPreference(trackId: string, liked: boolean): Promise<TrackPreference>
   recordPlaybackEvent(event: PlaybackEventInput): Promise<void>

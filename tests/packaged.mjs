@@ -4,14 +4,16 @@ import { once } from 'node:events'
 import { access, copyFile, mkdir, mkdtemp, readFile, realpath, rename, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
+import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 
 const { version } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
 const archive = fileURLToPath(new URL(`../release/MusicPlayer-${version}-win-x64.zip`, import.meta.url))
 const harness = fileURLToPath(new URL('./electron-smoke.mjs', import.meta.url))
 
-async function verifyExe(directory, cwd, profile, folder, phase) {
+async function verifyExe(directory, cwd, profile, folder, phase, expectedVersion = version) {
   // The test uses a one-shot inspector on loopback. The ZIP needs no test entrypoint.
   const executable = join(directory, 'Music Player.exe')
   const env = { ...process.env }
@@ -44,9 +46,20 @@ async function verifyExe(directory, cwd, profile, folder, phase) {
     ])
     socket = new WebSocket(address)
     await once(socket, 'open', { signal: timeout })
-    const response = once(socket, 'message', { signal: timeout })
-    socket.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: {
-      expression: `(async () => {
+    let requestId = 0
+    async function evaluate(expression) {
+      const response = once(socket, 'message', { signal: timeout })
+      socket.send(JSON.stringify({ id: ++requestId, method: 'Runtime.evaluate', params: {
+        expression, awaitPromise: true, returnByValue: true,
+      } }))
+      const [message] = await response
+      return JSON.parse(message.data)
+    }
+    // The inspector can connect during Node bootstrap. Wait for the app's event loop
+    // to run a timer before invoking require() in its main process.
+    const ready = 'typeof setTimeout === "function" && new Promise(resolve => setTimeout(resolve, 0, true))'
+    while ((await evaluate(ready)).result?.result?.value !== true) await delay(40, undefined, { signal: timeout })
+    const result = await evaluate(`(async () => {
         const require = process.getBuiltinModule('node:module').createRequire(process.execPath)
         const assert = require('node:assert/strict')
         const { setTimeout: delay } = require('node:timers/promises')
@@ -65,18 +78,14 @@ async function verifyExe(directory, cwd, profile, folder, phase) {
         const { join } = require('node:path')
         assert.equal(app.isPackaged, true)
         assert.equal(app.getName(), 'Music Player')
-        assert.equal(app.getVersion(), ${JSON.stringify(version)})
+        assert.equal(app.getVersion(), ${JSON.stringify(expectedVersion)})
         assert.equal(app.getPath('userData'), ${JSON.stringify(profile)})
         const preload = join(app.getAppPath(), 'out', 'preload', 'index.cjs')
         const { verify } = require(${JSON.stringify(harness)})
         await verify(${[folder, profile, phase].map(JSON.stringify).join(',')}, preload)
         setTimeout(() => BrowserWindow.getAllWindows()[0].close(), 50)
         return 'verified'
-      })()`,
-      awaitPromise: true, returnByValue: true,
-    } }))
-    const [message] = await response
-    const result = JSON.parse(message.data)
+      })()`)
     assert.equal(result.result?.result?.value, 'verified',
       result.result?.exceptionDetails?.exception?.description ?? JSON.stringify(result))
     socket.close()
@@ -93,7 +102,7 @@ async function verifyExe(directory, cwd, profile, folder, phase) {
   }
 }
 
-test('Windows ZIP launches from two locations and restores offline wave playback', { timeout: 90_000 }, async (t) => {
+async function prepareRelease(t) {
   const temp = await realpath(tmpdir())
   const root = await mkdtemp(join(temp, 'music-player-release-'))
   t.after(async () => {
@@ -108,7 +117,7 @@ test('Windows ZIP launches from two locations and restores offline wave playback
   await mkdir(launch)
   await mkdir(folder)
   await assert.rejects(access(profile), { code: 'ENOENT' })
-  execFileSync(join(process.env.SystemRoot, 'System32', 'tar.exe'), ['-xf', archive, '-C', launch])
+  unpack(archive, launch)
   const app = join(launch, `Music Player ${version}`)
   const demo = join(app, 'Demo audio')
   const mp3 = join(folder, '01.mp3')
@@ -117,6 +126,15 @@ test('Windows ZIP launches from two locations and restores offline wave playback
   const demoFlac = join(demo, '02-tone.flac')
   await copyFile(demoMp3, mp3)
   await copyFile(demoFlac, flac)
+  return { root, launch, folder, profile, app, mp3, flac, demoMp3, demoFlac }
+}
+
+function unpack(zip, directory) {
+  execFileSync(join(process.env.SystemRoot, 'System32', 'tar.exe'), ['-xf', zip, '-C', directory])
+}
+
+test('Windows ZIP launches from two locations and restores offline wave playback', { timeout: 90_000 }, async (t) => {
+  const { root, launch, folder, profile, app, mp3, flac, demoMp3, demoFlac } = await prepareRelease(t)
   await verifyExe(app, root, profile, folder, 'wave-import')
   assert.ok((await stat(join(profile, 'library.sqlite3'))).size > 0)
   await assert.rejects(access(join(app, 'library.sqlite3')), { code: 'ENOENT' })
@@ -126,4 +144,32 @@ test('Windows ZIP launches from two locations and restores offline wave playback
   const moved = join(root, 'Перенесённый плеер')
   await rename(app, moved)
   await verifyExe(moved, launch, profile, folder, 'wave-restart')
+})
+
+test('unpacked Windows ZIP persists playlists and the Wave mode', { timeout: 90_000 }, async (t) => {
+  const { root, folder, profile, app, mp3, demoMp3 } = await prepareRelease(t)
+  await verifyExe(app, root, profile, folder, 'playlist-import')
+  await verifyExe(app, root, profile, folder, 'playlist-restart')
+  assert.deepEqual(await readFile(mp3), await readFile(demoMp3))
+})
+
+const legacyArchive = process.env.MUSIC_PLAYER_011_ZIP
+test('upgrades a profile created by the original 0.1.1 Windows ZIP', { skip: !legacyArchive, timeout: 90_000 }, async (t) => {
+  const { root, folder, profile, app } = await prepareRelease(t)
+  unpack(legacyArchive, root)
+  await verifyExe(join(root, 'Music Player 0.1.1'), root, profile, folder, 'legacy-import', '0.1.1')
+
+  const preservedTables = ['tracks', 'sources', 'local_files', 'imported_folders', 'track_preferences', 'playback_events', 'playback_volume']
+  function snapshot(expectedSchema) {
+    using db = new DatabaseSync(join(profile, 'library.sqlite3'), { readOnly: true })
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, expectedSchema)
+    assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), [])
+    return preservedTables.map(table => db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all())
+  }
+  const before = snapshot(3)
+  await verifyExe(app, root, profile, folder, 'verify-upgrade')
+  const after = snapshot(4)
+  // Playback in the migrated application appends events to the existing history.
+  after[5] = after[5].slice(0, before[5].length)
+  assert.deepEqual(after, before)
 })

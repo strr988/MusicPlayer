@@ -43,3 +43,12 @@ test('personal wave plays offline, reacts to feedback and survives a restart wit
   await rm(join(fixtures, '02.flac'))
   await run('wave-restart')
 })
+
+test('playlists and Wave mode work in Electron and persist across restarts', { timeout: 75_000 }, async (t) => {
+  const { fixtures, run } = await prepareElectron(t)
+  const mp3 = join(fixtures, '01.mp3')
+  const original = await readFile(mp3)
+  await run('playlist-import')
+  await run('playlist-restart')
+  assert.deepEqual(await readFile(mp3), original)
+})

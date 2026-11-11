@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { PlaybackEvent, TrackPreference } from '../src/shared/contracts'
+import { waveModes } from '../src/shared/contracts'
 import { generateWave, preferenceQueue, randomQueue } from '../src/recommendations/engine'
 import type { RecommendationCandidate, RecommendationContext } from '../src/recommendations/engine'
 import { measureQueue } from '../src/recommendations/metrics'
@@ -124,6 +125,37 @@ describe('recommendations', () => {
     const choices = Array.from({ length: 100 }, (_, seed) => generateWave({ ...input, seed }, 1)[0])
     expect(choices).toContain('a')
     expect(choices).toContain('b')
+  })
+
+  it('keeps Balance identical to the default and increases early discoveries across modes', () => {
+    const recent = ['c', 'd', 'e', 'f', 'g']
+    const input = context(['a', 'b', ...recent].map(id => track(id)))
+    input.listening.preferences = [like('a')]
+    input.listening.events = ['a', ...recent].map(id => event(id, 'started'))
+    const discoveries = { familiar: 0, balance: 0, discovery: 0 }
+    for (let seed = 0; seed < 100; seed++) {
+      const seeded = { ...input, seed }
+      expect(generateWave({ ...seeded, mode: 'balance' }, 7)).toEqual(generateWave(seeded, 7))
+      for (const mode of waveModes) {
+        const snapshot = { ...seeded, mode }
+        const queue = generateWave(snapshot, 3)
+        expect(generateWave(structuredClone(snapshot), 3)).toEqual(queue)
+        if (queue[0] === 'b') discoveries[mode]++
+      }
+    }
+    expect(discoveries.familiar).toBe(0)
+    expect(discoveries.balance).toBeGreaterThan(discoveries.familiar)
+    expect(discoveries.discovery).toBeGreaterThan(discoveries.balance)
+  })
+
+  it('caps every mode at the number of unique available tracks in a short catalog', () => {
+    for (const mode of waveModes) {
+      for (const size of [0, 1, 2]) {
+        const available = [track('a'), track('b')].slice(0, size)
+        const input = { ...context([...available, ...available, track('x', 'X', false)]), mode }
+        expect(generateWave(input, 10).sort()).toEqual(available.map(track => track.id))
+      }
+    }
   })
 })
 

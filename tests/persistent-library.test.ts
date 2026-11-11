@@ -51,7 +51,7 @@ it('persists tracks, source IDs and canonical folders across reopening and overl
   expect(db.prepare('SELECT COUNT(*) AS count FROM imported_folders').get()).toEqual({ count: 2 })
   expect(db.prepare('SELECT COUNT(*) AS count FROM sources WHERE available = 1').get()).toEqual({ count: 2 })
   expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
-  expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 3 })
+  expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 4 })
 })
 
 it('retains the track when moving a file on the same volume and revokes the old media ID', async () => {
@@ -104,7 +104,7 @@ it('persists missing and changed-file availability and restores a track on succe
 
   const reopened = openLibrary()
   await reopened.refreshAvailability()
-  expect(reopened.getTracks()).toEqual(tracks)
+  expect(reopened.getTracks()).toEqual(tracks.map(track => ({ ...track, available: false })))
   expect(await reopened.getAvailableSource(oldSource)).toBeUndefined()
   expect((await reopened.importFolder(folder)).issues).toEqual([{ entry: 'tone.mp3', reason: 'file-unreadable' }])
 
@@ -121,6 +121,45 @@ it('persists missing and changed-file availability and restores a track on succe
   expect(reopened.getSourceId(mp3Id)).not.toBe(oldSource)
   expect(await reopened.getAvailableSource(reopened.getSourceId(mp3Id)!)).toBeDefined()
   expect(await reopened.getAvailableSource(oldSource)).toBeUndefined()
+})
+
+it('persists playlist membership and order, deduplicates additions and keeps unavailable tracks', async () => {
+  const mp3Path = join(folder, 'tone.mp3')
+  const flacPath = join(folder, 'tone.flac')
+  await copyFile(mp3, mp3Path)
+  await copyFile(flac, flacPath)
+  const first = openLibrary()
+  const { tracks } = await first.importFolder(folder)
+  const a = tracks.find(track => track.format === 'mp3')!
+  const b = tracks.find(track => track.format === 'flac')!
+  const playlist = first.createPlaylist('Избранное')
+  await Promise.all([first.addPlaylistTrack(playlist.id, a.id), first.addPlaylistTrack(playlist.id, a.id)])
+  expect(first.getPlaylists()).toEqual([{ ...playlist, trackIds: [a.id] }])
+  await first.addPlaylistTrack(playlist.id, b.id)
+  first.renamePlaylist(playlist.id, 'В дороге')
+  expect(first.movePlaylistTrack(playlist.id, a.id, 1).trackIds).toEqual([b.id, a.id])
+  expect(first.movePlaylistTrack(playlist.id, a.id, 1).trackIds).toEqual([b.id, a.id])
+  first.setWaveMode('discovery')
+  await rm(mp3Path)
+
+  const reopened = openLibrary()
+  await reopened.refreshAvailability()
+  expect(reopened.getWaveMode()).toBe('discovery')
+  expect(reopened.getPlaylists()).toEqual([{ id: playlist.id, name: 'В дороге', trackIds: [b.id, a.id] }])
+  expect(reopened.getTracks().find(track => track.id === a.id)?.available).toBe(false)
+  const other = reopened.createPlaylist('Другой')
+  await expect(reopened.addPlaylistTrack(other.id, a.id)).rejects.toThrow(/Track unavailable/)
+  await reopened.addPlaylistTrack(other.id, b.id)
+  expect(reopened.removePlaylistTrack(playlist.id, b.id).trackIds).toEqual([a.id])
+  await reopened.addPlaylistTrack(playlist.id, b.id)
+  expect(reopened.movePlaylistTrack(playlist.id, b.id, -1).trackIds).toEqual([b.id, a.id])
+  reopened.deletePlaylist(playlist.id)
+  expect(reopened.getPlaylists()).toEqual([{ ...other, trackIds: [b.id] }])
+  expect(reopened.getTracks()).toHaveLength(2)
+  expect(await readFile(flacPath)).toEqual(await readFile(flac))
+  using db = new DatabaseSync(databasePath, { readOnly: true })
+  expect(db.prepare('SELECT COUNT(*) AS count FROM playlist_items').get()).toEqual({ count: 1 })
+  expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
 })
 
 it('rolls back a failed migration and refuses a newer schema without overwriting its data', () => {

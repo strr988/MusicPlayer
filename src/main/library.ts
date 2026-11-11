@@ -3,7 +3,7 @@ import { lstat, open, readdir, realpath } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import { basename, extname, isAbsolute, join, relative, sep } from 'node:path'
 import { parseFile, parseStream } from 'music-metadata'
-import type { ImportIssue, ImportResult, LibraryTrack, Track, ListeningDataReader, PlaybackEventInput, VolumePreference } from '../shared/contracts'
+import type { ImportIssue, ImportResult, LibraryTrack, Track, ListeningDataReader, PlaybackEventInput, VolumePreference, WaveMode } from '../shared/contracts'
 import type { RecommendationCandidate } from '../recommendations/engine'
 import { LibraryStore } from './library-store'
 import type { LocalSource, ScanEntry } from './library-store'
@@ -98,14 +98,29 @@ export class Library implements ListeningDataReader {
   getVolume(): VolumePreference { return this.store.getVolume() }
   setVolume(volume: VolumePreference): void { this.store.setVolume(volume) }
 
+  getWaveMode() { return this.store.getWaveMode() }
+  setWaveMode(mode: WaveMode): void { this.store.setWaveMode(mode) }
+
+  getPlaylists() { return this.store.getPlaylists() }
+  createPlaylist(name: string) { return this.store.createPlaylist(name) }
+  renamePlaylist(id: string, name: string): void { this.store.renamePlaylist(id, name) }
+  deletePlaylist(id: string): void { this.store.deletePlaylist(id) }
+  removePlaylistTrack(id: string, trackId: string) { return this.store.removePlaylistTrack(id, trackId) }
+  movePlaylistTrack(id: string, trackId: string, offset: -1 | 1) { return this.store.movePlaylistTrack(id, trackId, offset) }
+
+  async addPlaylistTrack(id: string, trackId: string) {
+    const sourceId = this.getSourceId(trackId)
+    if (!sourceId || !await this.getAvailableSource(sourceId)) throw new Error('Track unavailable')
+    return this.store.addPlaylistTrack(id, trackId)
+  }
+
   getTracks(): LibraryTrack[] {
     return this.store.getTracks()
   }
 
   async getRecommendationCandidates(): Promise<RecommendationCandidate[]> {
     await this.refreshAvailability()
-    const available = new Set(this.store.getLocalSources().filter(source => source.available).map(source => source.trackId))
-    return this.getTracks().map(({ id, artist, genres }) => ({ id, artist, genres, available: available.has(id) }))
+    return this.getTracks().map(({ id, artist, genres, available }) => ({ id, artist, genres, available }))
   }
 
   async refreshAvailability(): Promise<void> {
