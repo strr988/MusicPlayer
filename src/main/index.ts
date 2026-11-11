@@ -7,6 +7,7 @@ import { channels, playerOrigin } from '../shared/contracts'
 import type { ImportResult } from '../shared/contracts'
 import { Library } from './library'
 import { serveMedia } from './media'
+import { validatePlaybackEvent, validatePreference } from './feedback-validation'
 
 const scheme = 'music-player'
 const trackIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
@@ -47,6 +48,20 @@ async function chooseFolder(owner: BrowserWindow, library: Library): Promise<Imp
 }
 
 function registerIpc(library: Library): void {
+  ipcMain.handle(channels.getListeningData, (event) => {
+    senderWindow(event)
+    return library.getListeningData()
+  })
+  ipcMain.handle(channels.setTrackPreference, (event, trackId: unknown, liked: unknown) => {
+    senderWindow(event)
+    validatePreference(trackId, liked)
+    return library.setTrackPreference(trackId as string, liked as boolean)
+  })
+  ipcMain.handle(channels.recordPlaybackEvent, (event, input: unknown) => {
+    senderWindow(event)
+    validatePlaybackEvent(input)
+    library.recordPlaybackEvent(input)
+  })
   ipcMain.handle(channels.importFolder, (event) => {
     const owner = senderWindow(event)
     pendingImport ??= chooseFolder(owner, library).finally(() => { pendingImport = undefined })

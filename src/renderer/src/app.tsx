@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { ImportIssue, Track } from '../../shared/contracts'
+import type { ImportIssue, Track, TrackPreference } from '../../shared/contracts'
 import { formatTime, usePlayback } from './playback'
 
 export function App() {
@@ -8,6 +8,28 @@ export function App() {
   const [notice, setNotice] = useState('')
   const [issues, setIssues] = useState<ImportIssue[]>([])
   const playback = usePlayback(tracks)
+  const [preferences, setPreferences] = useState<TrackPreference[]>([])
+  const [pendingLike, setPendingLike] = useState<string | null>(null)
+  const [preferencesReady, setPreferencesReady] = useState(false)
+  useEffect(() => {
+    let active = true
+    void window.musicPlayer.getListeningData().then(data => {
+      if (active) { setPreferences(data.preferences); setPreferencesReady(true) }
+    }).catch(() => { if (active) setNotice('Не удалось загрузить предпочтения. Перезапустите приложение.') })
+    return () => { active = false }
+  }, [])
+  const likedTrackIds = new Set(preferences.filter(item => item.liked).map(item => item.trackId))
+
+  async function toggleLike(trackId: string): Promise<void> {
+    if (pendingLike) return
+    setPendingLike(trackId)
+    try {
+      const liked = preferences.find(item => item.trackId === trackId)?.liked ?? false
+      const value = await window.musicPlayer.setTrackPreference(trackId, !liked)
+      setPreferences(previous => [...previous.filter(item => item.trackId !== trackId), value])
+    } catch { setNotice('Не удалось сохранить лайк.') }
+    finally { setPendingLike(null) }
+  }
 
   useEffect(() => {
     void window.musicPlayer.getTracks().then(setTracks).catch(() => {
@@ -71,7 +93,7 @@ export function App() {
           </div>
         ) : (
           <table className="tracks">
-            <thead><tr><th>Название</th><th>Исполнитель</th><th>Альбом</th><th>Формат</th><th>Время</th></tr></thead>
+            <thead><tr><th>Название</th><th>Исполнитель</th><th>Альбом</th><th>Формат</th><th>Время</th><th>Лайк</th></tr></thead>
             <tbody>
               {tracks.map((track) => (
                 <tr key={track.id} data-current={track.id === playback.track?.id}>
@@ -84,6 +106,11 @@ export function App() {
                   <td className="truncate" title={track.album ?? undefined}>{track.album ?? '—'}</td>
                   <td><span className="format">{track.format.toUpperCase()}</span></td>
                   <td>{formatTime(track.durationSeconds)}</td>
+                  <td><button aria-label={`Лайк: ${track.title}`}
+                    aria-pressed={likedTrackIds.has(track.id)}
+                    disabled={!preferencesReady || pendingLike !== null} onClick={() => void toggleLike(track.id)}>
+                    {preferences.some(item => item.trackId === track.id && item.liked) ? '♥' : '♡'}
+                  </button></td>
                 </tr>
               ))}
             </tbody>

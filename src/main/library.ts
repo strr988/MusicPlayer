@@ -3,7 +3,7 @@ import { lstat, open, readdir, realpath } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import { basename, extname, isAbsolute, join, relative, sep } from 'node:path'
 import { parseFile } from 'music-metadata'
-import type { ImportIssue, ImportResult, Track } from '../shared/contracts'
+import type { ImportIssue, ImportResult, Track, PlaybackEventInput } from '../shared/contracts'
 import { LibraryStore } from './library-store'
 import type { LocalSource, ScanEntry } from './library-store'
 import { fileIdentity, moveKey, sameFile, sameIdentity } from './local-file'
@@ -61,6 +61,10 @@ export class Library {
   close(): void {
     this.store.close()
   }
+
+  getListeningData() { return this.store.getListeningData() }
+  setTrackPreference(trackId: string, liked: boolean) { return this.store.setTrackPreference(trackId, liked) }
+  recordPlaybackEvent(event: PlaybackEventInput): void { this.store.recordPlaybackEvent(event) }
 
   getTracks(): Track[] {
     return this.store.getTracks()

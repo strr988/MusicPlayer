@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite'
-import type { Track } from '../shared/contracts'
+import type { Track, ListeningData, ListeningDataReader, PlaybackEventInput, TrackPreference } from '../shared/contracts'
 import type { FileIdentity } from './local-file'
 
 const migrations = [
@@ -33,6 +33,17 @@ const migrations = [
   CREATE TABLE imported_folders (
     path TEXT PRIMARY KEY NOT NULL
   ) STRICT;`,
+  `CREATE TABLE track_preferences (
+    track_id TEXT PRIMARY KEY NOT NULL REFERENCES tracks(id),
+    liked INTEGER NOT NULL CHECK (liked IN (0, 1)), updated_at TEXT NOT NULL
+  ) STRICT;
+  CREATE TABLE playback_events (
+    session_id TEXT NOT NULL, track_id TEXT NOT NULL REFERENCES tracks(id),
+    type TEXT NOT NULL CHECK (type IN ('started', 'completed', 'skipped', 'ended', 'error')),
+    listened_seconds REAL NOT NULL CHECK (listened_seconds >= 0), timestamp TEXT NOT NULL
+  ) STRICT;
+  CREATE UNIQUE INDEX one_start_per_session ON playback_events(session_id) WHERE type = 'started';
+  CREATE UNIQUE INDEX one_terminal_per_session ON playback_events(session_id) WHERE type <> 'started';`,
 ]
 
 export interface LocalSource {
@@ -83,7 +94,7 @@ function toLocalSource(row: LocalSourceRow): LocalSource {
   }
 }
 
-export class LibraryStore {
+export class LibraryStore implements ListeningDataReader {
   private readonly db: DatabaseSync
 
   constructor(path: string) {
@@ -105,6 +116,38 @@ export class LibraryStore {
 
   close(): void {
     this.db.close()
+  }
+
+  getListeningData(): ListeningData {
+    const preferences = this.db.prepare(`SELECT track_id AS trackId, liked, updated_at AS updatedAt
+      FROM track_preferences ORDER BY track_id`).all() as unknown as (Omit<TrackPreference, 'liked'> & { liked: number })[]
+    return {
+      preferences: preferences.map(row => ({ ...row, liked: row.liked === 1 })),
+      events: this.db.prepare(`SELECT session_id AS sessionId, track_id AS trackId, type,
+        listened_seconds AS listenedSeconds, timestamp FROM playback_events ORDER BY rowid`).all() as unknown as ListeningData['events'],
+    }
+  }
+
+  setTrackPreference(trackId: string, liked: boolean): TrackPreference {
+    const updatedAt = new Date().toISOString()
+    this.db.prepare(`INSERT INTO track_preferences VALUES (?, ?, ?)
+      ON CONFLICT(track_id) DO UPDATE SET liked = excluded.liked, updated_at = excluded.updated_at`)
+      .run(trackId, Number(liked), updatedAt)
+    return { trackId, liked, updatedAt }
+  }
+
+  recordPlaybackEvent(event: PlaybackEventInput): void {
+    this.transaction(() => {
+      const rows = this.db.prepare(`SELECT track_id, type FROM playback_events
+        WHERE session_id = ?`).all(event.sessionId) as { track_id: string; type: string }[]
+      if (rows.some(row => row.track_id !== event.trackId)) throw new Error('Session track mismatch')
+      if (rows.some(row => row.type === event.type)) return
+      if (rows.some(row => row.type !== 'started')) throw new Error('Session already finished')
+      if (event.type !== 'started' && event.type !== 'error' && rows.length === 0) throw new Error('Session not started')
+      if (event.type === 'started' && event.listenedSeconds !== 0) throw new Error('Invalid start duration')
+      this.db.prepare('INSERT INTO playback_events VALUES (?, ?, ?, ?, ?)')
+        .run(event.sessionId, event.trackId, event.type, event.listenedSeconds, new Date().toISOString())
+    })
   }
 
   getTracks(): Track[] {
