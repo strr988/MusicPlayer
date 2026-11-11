@@ -34,6 +34,14 @@ pnpm test:release
 
 Первые две команды подготавливают локальный store и Windows-бинарники Electron. Упаковка использует этот store офлайн с `--frozen-lockfile`, production-зависимости раскладываются без install-скриптов. Штатный Windows `tar.exe` создаёт ZIP в `release`. Рядом сохраняется SHA-256. Это переносимый каталог приложения с `resources/app`. Лицензии Electron и Chromium находятся в корне распакованной папки, лицензии runtime-пакетов входят в их каталоги.
 
+GitHub Actions проверяет установку по lockfile, TypeScript, сборку и модульные тесты на Windows. Десктопные сценарии и проверки ZIP выполняются отдельно в интерактивном сеансе Windows x64. Сценарии миграции используют локальные архивы предыдущих выпусков, указанные ниже.
+
+## Сторонние компоненты ZIP
+
+Сборка использует DLL из официального Windows x64-дистрибутива Electron 45.3.0. В их числе `ffmpeg.dll`, DirectX Shader Compiler и SwiftShader. Уведомления Electron и Chromium находятся в `LICENSE` и `LICENSES.chromium.html` в корне распакованной папки. Уведомления npm-пакетов находятся внутри `resources/app/node_modules`. [Дистрибутив Electron 45.3.0](https://github.com/electron/electron/releases/tag/v45.3.0).
+
+Для распространения `ffmpeg.dll` необходимо выполнить условия LGPL для соответствующих исходников, включая патчи и настройки сборки. Electron 45.3.0 использует Chromium 156.0.8078.96 с ревизией FFmpeg `9db86ce5b5b454dfc96c435f9f0723012980c37f`. В конфигурации Electron включены дополнительные кодеки (`proprietary_codecs = true`, `ffmpeg_branding = "Chrome"`). Условия распространения этой конфигурации зависят от конкретных кодеков и территории. [Исходники FFmpeg](https://chromium.googlesource.com/chromium/third_party/ffmpeg/+/9db86ce5b5b454dfc96c435f9f0723012980c37f) · [Патчи Electron](https://github.com/electron/electron/tree/v45.3.0/patches/ffmpeg) · [Конфигурация Electron](https://github.com/electron/electron/blob/v45.3.0/build/args/all.gn) · [Условия распространения FFmpeg](https://ffmpeg.org/legal.html).
+
 ## Проверка обновления
 
 ```powershell

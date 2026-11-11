@@ -4,3 +4,26 @@ out/
 release/
 coverage/
 *.log
+.env
+.env.*
+!.env.example
+.npmrc
+.idea/
+.vscode/
+*.sqlite*
+*.db
+*.db-shm
+*.db-wal
+*.zip
+*.zip.sha256
+*.mp3
+*.flac
+!tests/fixtures/*.mp3
+!tests/fixtures/*.flac
+
+# Данные локального исследовательского пилота
+snapshot.json
+audio-map.json
+organizer-key.json
+ratings*.json
+session-*/
