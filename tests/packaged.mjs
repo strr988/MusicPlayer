@@ -235,3 +235,12 @@ test('opens a 0.4.0 profile and restores its session on SQLite schema 5', { skip
   await verifyExe(app, root, profile, folder, 'queue-restart')
   assert.deepEqual(checkSchema(), tracks)
 })
+
+const explainableBaselineArchive = process.env.MUSIC_PLAYER_041_ZIP
+test('restores 0.4.1 feedback and playback with explanations for fresh Wave entries', { skip: !explainableBaselineArchive, timeout: 90_000 }, async (t) => {
+  const { root, folder, profile, app, flac } = await prepareRelease(t)
+  unpack(explainableBaselineArchive, root)
+  await verifyExe(join(root, 'Music Player 0.4.1'), root, profile, folder, 'wave-import', '0.4.1')
+  await rm(flac)
+  await verifyExe(app, root, profile, folder, 'wave-restart')
+})

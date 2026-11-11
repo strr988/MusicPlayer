@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
 import type { PlaybackEvent, TrackPreference } from '../src/shared/contracts'
 import { waveModes } from '../src/shared/contracts'
-import { generateWave, preferenceQueue, randomQueue } from '../src/recommendations/engine'
+import { explainWave, generateWave, preferenceQueue, randomQueue } from '../src/recommendations/engine'
 import type { RecommendationCandidate, RecommendationContext } from '../src/recommendations/engine'
 import { measureQueue } from '../src/recommendations/metrics'
 
@@ -161,9 +162,87 @@ describe('recommendations', () => {
 
 it('measures artist diversity and repeats independently of ranking scores', () => {
   const artists = new Map([['a', 'x'], ['b', 'x'], ['c', 'y'], ['unknown', undefined]])
-  expect(measureQueue(['a', 'b', 'unknown', 'a', 'c'], artists, new Set(['a']))).toEqual({
+  expect(measureQueue(['a', 'b', 'unknown', 'a', 'c'], artists, new Set(['a']), new Set(['a', 'b']))).toEqual({
     tracks: 5, knownArtistTracks: 4, distinctArtists: 2, artistDiversity: 0.5,
     sameArtistTransitionRate: 0.5, repeatedTracks: 1, historyRepeats: 2,
+    unheardTracks: 2, unheardShare: 0.4,
   })
   expect(measureQueue(['unknown'], artists, new Set()).artistDiversity).toBeNull()
+})
+
+describe('wave diagnostics', () => {
+  it('matches the queues captured from d453c39 with and without diagnostics', () => {
+    const fixture: {
+      now: number
+      snapshots: Pick<RecommendationContext, 'candidates' | 'listening'>[]
+      cases: ({ seed: number; random: string[]; preferences: string[] } & Record<typeof waveModes[number], string[]> )[][]
+    } = JSON.parse(readFileSync(new URL('./fixtures/wave-0.4.1.json', import.meta.url), 'utf8'))
+    for (const [index, snapshot] of fixture.snapshots.entries()) {
+      for (const expected of fixture.cases[index]) {
+        const input = { ...snapshot, now: fixture.now, seed: expected.seed }
+        expect(randomQueue(input, 10)).toEqual(expected.random)
+        expect(preferenceQueue(input, 10)).toEqual(expected.preferences)
+        for (const mode of waveModes) {
+          const configured = { ...input, mode }
+          expect(generateWave(configured, 10)).toEqual(expected[mode])
+          const explained = explainWave(configured, 10)
+          expect(explained.decisions.map(item => item.trackId)).toEqual(expected[mode])
+          expect(explainWave(configured, 10)).toEqual(explained)
+        }
+      }
+    }
+  })
+
+  it('reports actual signed and capped score factors with the reaction time window', () => {
+    const input = context([{ ...track('a', ' Artist '), genres: [' Rock '] }])
+    input.listening.preferences = [like('a')]
+    const start = event('a', 'started')
+    const old = new Date(now - 31 * 86_400_000).toISOString()
+    input.listening.events = [
+      { ...start, timestamp: old },
+      ...Array.from({ length: 3 }, (_, i) => event('a', 'skipped', 's' + i)),
+      event('a', 'completed', 'c'),
+      { ...event('a', 'completed', 'edge'), timestamp: new Date(now - 30 * 86_400_000).toISOString() },
+      { ...event('a', 'completed', 'old'), timestamp: old },
+      { ...event('a', 'completed', 'future'), timestamp: new Date(now + 1).toISOString() },
+    ]
+    const result = explainWave(input, 5)
+    expect(result).toMatchObject({ calculatedAt: now, reactionWindowMs: 30 * 86_400_000, recentLimit: 0, seed: 42 })
+    expect(result.decisions).toMatchObject([{
+      trackId: 'a', score: 3, eligible: 1, selection: 'only-eligible', prioritizedUnheard: false,
+      factors: { likedTrack: 6, likedArtist: 2, likedGenre: 1, unheard: 0, completions: 2, skips: -8 },
+    }])
+  })
+
+  it('traces exploration over a higher score and the repeat and artist exclusions', () => {
+    const recent = ['c', 'd', 'e', 'f', 'g']
+    const input = context([track('a', 'A'), track('b'), ...recent.map(id => track(id, 'C'))])
+    input.listening.preferences = [like('a')]
+    input.listening.events = ['a', ...recent].map(id => event(id, 'started'))
+    const attempts = Array.from({ length: 10 }, (_, seed) =>
+      explainWave({ ...input, mode: 'discovery', seed }, 7))
+    const explored = attempts.find(attempt => attempt.decisions[0].prioritizedUnheard)!
+    expect(explored.decisions[0]).toMatchObject({
+      trackId: 'b', score: 1, selection: 'exploration', eligible: 2, recentExcluded: 5,
+      factors: { likedArtist: 0, likedGenre: 0, unheard: 1 },
+    })
+    expect(explored.decisions[0].explorationRoll).toBeLessThan(0.8)
+    expect(explainWave({ ...input, mode: 'familiar', seed: explored.seed }, 7).decisions[0].trackId).toBe('a')
+    expect(explored.decisions.every(decision => !decision.recentRelaxed)).toBe(true)
+    const diversity = context([track('a', 'A'), track('b', 'A'), track('c', 'C')])
+    diversity.listening.events = [event('a', 'started')]
+    expect(explainWave(diversity, 1).decisions[0]).toMatchObject({
+      trackId: 'c', recentExcluded: 1, sameArtistExcluded: 1, selection: 'only-eligible',
+    })
+  })
+
+  it('describes ties at cold start and returns no decisions for unavailable or empty catalogs', () => {
+    expect(explainWave(context([]), 10).decisions).toEqual([])
+    expect(explainWave(context([track('x', null, false)]), 10).decisions).toEqual([])
+    const cold = { ...context([track('a'), track('b')]), mode: 'familiar' as const }
+    expect(explainWave(cold, 10).decisions).toMatchObject([
+      { selection: 'seeded-tie', tiedForChoice: 2, score: 1 },
+      { selection: 'only-eligible', tiedForChoice: 1, score: 1 },
+    ])
+  })
 })

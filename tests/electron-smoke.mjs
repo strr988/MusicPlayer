@@ -65,6 +65,7 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
   await waitFor(`${buttons}.some(button => button.getClientRects().length &&
     button.innerText.includes('Выбрать папку') && !button.disabled)`, 'library initialized')
   const modern = !app.isPackaged || !['0.1.1', '0.2.0', '0.3.0'].includes(app.getVersion())
+  const explainable = !app.isPackaged || app.getVersion() === '0.5.0'
   const openWave = async () => {
     if (modern) await click('Моя волна')
   }
@@ -106,7 +107,7 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
   ]).sort()
   const expectedApi = phase === 'legacy-import' ? oldApi :
     app.getVersion() === '0.2.0' && app.isPackaged ? playlistApi :
-      playlistApi.concat(['getPlaybackSession', 'setPlaybackSession']).sort()
+      playlistApi.concat(['getPlaybackSession', 'setPlaybackSession'], explainable ? ['getWaveRecommendations'] : []).sort()
   assert.deepEqual(await run(`({
     process: typeof window.process,
     require: typeof window.require,
@@ -168,9 +169,19 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     await setRepeat('all')
     await click('Лайк: Test Tone FLAC')
     await waitFor('(async () => (await window.musicPlayer.getListeningData()).preferences.some(p => p.liked))()', 'Wave like persisted')
+    const beforeCalculation = await run('window.musicPlayer.getListeningData()')
+    const trace = await run('window.musicPlayer.getWaveRecommendations()')
+    assert.equal(trace.decisions.length, 2)
+    assert.equal(trace.decisions[0].factors.likedTrack, 6)
+    assert.deepEqual(await run('window.musicPlayer.getListeningData()'), beforeCalculation)
     await startWave()
     const flac = await waitForAudio(`${advancing} && audio.duration === 5`, 'Wave plays liked FLAC')
     await waitFor('document.querySelector(".wave-status[role=status]")?.innerText.includes("Сейчас играет")', 'Wave shows the active track')
+    await waitFor('!!document.querySelector(".wave-explanation summary")', 'automatic recommendation has an explanation')
+    await run('document.querySelector(".wave-explanation summary").click()')
+    assert.match(await run('document.querySelector(".wave-explanation").innerText'), /отметили этот трек лайком/)
+    await run('document.querySelector(".wave-diagnostics summary").click()')
+    assert.match(await run('document.querySelector(".wave-diagnostics").innerText'), /Итоговый балл/)
     await click('Библиотека')
     await waitFor('navigator.mediaSession.metadata?.title === "Test Tone FLAC" && navigator.mediaSession.playbackState === "playing"', 'Windows media metadata')
     await click('Добавить в очередь: Test Tone FLAC')
@@ -204,6 +215,7 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     await media('nexttrack')
     await waitForAudio(`${advancing} && audio.src !== '${flac}'`, 'Media Session next plays priority item')
     assert.equal((await sessionState()).queue.current, manual[0].id)
+    assert.equal(await run('!!document.querySelector(".wave-explanation")'), false)
     await finishTrack()
     await waitForAudio(`${advancing} && audio.src === '${flac}'`, 'manual tail plays after priority item')
     assert.equal((await sessionState()).queue.current, manual[1].id)
@@ -337,6 +349,10 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     assert.equal(await run('document.querySelectorAll("audio").length'), 1)
     await click('Пауза')
     await waitForAudio('audio.paused', 'pause in wave')
+    if (explainable) {
+      await run('document.querySelector(".wave-explanation summary").click()')
+      assert.match(await run('document.querySelector(".wave-explanation").innerText'), /отметили этот трек лайком/)
+    }
     const paused = await run('window.musicPlayer.getListeningData()')
     assert.deepEqual(paused.events.map(event => event.type), ['started'])
     if (modern) await click('Библиотека')
@@ -375,11 +391,19 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     await waitFor('document.querySelector("audio").muted && document.querySelector("audio").volume === 0.37', 'volume and mute restored on restart')
     assert.deepEqual(await run('window.musicPlayer.getListeningData()'), feedback)
     assert.deepEqual(await run('window.musicPlayer.getWaveQueue()'), [mp3Id])
+    if (explainable) {
+      await openWave()
+      await waitFor('!!document.querySelector(".wave-explanation-unavailable")', 'restored Wave entry has no diagnostic trace')
+    }
     player.minimize()
     await eventually(() => player.isMinimized(), 'minimized Windows player')
     await startWave()
     await waitForAudio(`${advancing} && audio.src === ${JSON.stringify(mp3)} && audio.muted`, 'only available track plays muted while minimized')
     player.restore()
+    if (explainable) {
+      await run('document.querySelector(".wave-explanation summary").click()')
+      assert.match(await run('document.querySelector(".wave-explanation").innerText'), /один кандидат/)
+    }
     await click('Без звука')
     await waitForAudio('!audio.muted && audio.volume === 0.37', 'unmute after restart restores prior level')
     await waitFor('document.querySelector("footer [role=status]").innerText.includes("других доступных")', 'singleton wave stops after playback')
@@ -514,6 +538,7 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     await otherWindow.loadURL(webContents.getURL())
     const refusals = await otherWindow.webContents.executeJavaScript(`Promise.all(
       [window.musicPlayer.getTracks(), window.musicPlayer.getWaveQueue(),
+        window.musicPlayer.getWaveRecommendations(),
         window.musicPlayer.getVolume(), window.musicPlayer.setVolume(0, true),
         window.musicPlayer.getPlaylists(), window.musicPlayer.createPlaylist('test'),
         window.musicPlayer.getWaveMode(), window.musicPlayer.setWaveMode('discovery'),

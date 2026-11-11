@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; media-src file:; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<title>Прослушивание подборок</title>
+<style>
+  body { max-width: 45rem; margin: 2rem auto; padding: 0 1rem; font: 1rem/1.5 system-ui, sans-serif; color-scheme: light dark; }
+  audio { display: block; width: 100%; margin-block: 1rem; }
+  label { display: block; margin-block: 1rem; }
+  button, select { font: inherit; padding: .35rem .6rem; }
+  .actions { display: flex; flex-wrap: wrap; gap: .6rem; margin-top: 1rem; }
+</style>
+<h1>Прослушивание подборок</h1>
+<p>Прослушайте подборки по порядку при одинаковой громкости. Для каждого трека укажите, насколько он подходит вашему вкусу.
+  1 — совсем не подходит, 5 — отлично подходит. Оценка знакомства необязательна.</p>
+<main>
+  <h2 id="position" tabindex="-1"></h2>
+  <p>Фрагмент до <span id="seconds"></span> секунд с начала записи.</p>
+  <audio controls preload="none"></audio>
+  <p id="media-status" role="status"></p>
+  <label>Соответствие вкусу
+    <select id="rating">
+      <option value="">Без оценки</option>
+      <option>1</option><option>2</option><option>3</option><option>4</option><option>5</option>
+      <option value="audio-error">Ошибка воспроизведения</option>
+    </select>
+  </label>
+  <label>Слышали этот трек до эксперимента?
+    <select id="familiarity">
+      <option value="">Без ответа</option><option value="yes">Да</option><option value="no">Нет</option>
+    </select>
+  </label>
+  <div class="actions">
+    <button type="button" id="back">Назад</button>
+    <button type="button" id="next">Далее</button>
+    <button type="button" id="save" hidden>Скачать оценки</button>
+    <button type="button" id="exit">Завершить без сохранения</button>
+  </div>
+</main>
+<p id="status" role="status"></p>
+<script id="session" type="application/json"><!--SESSION_DATA--></script>
+<script>
+  const { sessionId, excerptSeconds, queues } = JSON.parse(document.getElementById('session').textContent)
+  const byId = id => document.getElementById(id)
+  const count = queues[0].length
+  const sources = queues.flat()
+  const answers = sources.map(() => ({ status: 'missing' }))
+  const audio = document.querySelector('audio')
+  const rating = byId('rating')
+  const familiarity = byId('familiarity')
+  let index = 0
+  byId('seconds').textContent = excerptSeconds
+
+  function remember() {
+    answers[index] = rating.value === 'audio-error' ? { status: 'audio-error' } : rating.value
+      ? { status: 'rated', rating: Number(rating.value), familiarity: familiarity.value || null }
+      : { status: 'missing' }
+  }
+  function show(focus = true) {
+    audio.pause()
+    audio.src = sources[index]
+    byId('media-status').textContent = ''
+    const answer = answers[index]
+    rating.value = answer.status === 'rated' ? String(answer.rating) : answer.status === 'audio-error' ? answer.status : ''
+    familiarity.value = answer.familiarity || ''
+    byId('position').textContent = 'Подборка ' + (Math.floor(index / count) + 1) + ' из 3 · Трек ' + (index % count + 1) + ' из ' + count
+    byId('back').disabled = index === 0
+    byId('next').hidden = index === sources.length - 1
+    byId('save').hidden = index !== sources.length - 1
+    if (focus) byId('position').focus()
+  }
+  audio.addEventListener('timeupdate', () => {
+    if (audio.currentTime >= excerptSeconds) audio.pause()
+  })
+  audio.addEventListener('error', () => {
+    byId('media-status').textContent = 'Файл не воспроизводится. При необходимости отметьте ошибку в поле оценки.'
+  })
+  byId('back').onclick = () => { remember(); index--; show() }
+  byId('next').onclick = () => { remember(); index++; show() }
+  byId('exit').onclick = () => {
+    if (!confirm('Завершить участие и удалить ответы из формы?')) return
+    answers.fill(null)
+    audio.pause()
+    audio.removeAttribute('src')
+    audio.load()
+    document.querySelector('main').remove()
+    byId('status').textContent = 'Сессия завершена. Если вы уже скачали файл, его можно удалить.'
+  }
+  byId('save').onclick = () => {
+    audio.pause()
+    if (!confirm('Скачать файл с оценками и анонимным кодом сессии?')) return
+    remember()
+    const blocks = queues.map((_, block) => answers.slice(block * count, (block + 1) * count))
+    const result = { kind: 'pilot-ratings', schemaVersion: 2, sessionId, blocks }
+    const url = URL.createObjectURL(new Blob([JSON.stringify(result, null, 2)], { type: 'application/json' }))
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'ratings-' + sessionId + '.json'
+    link.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+    byId('status').textContent = 'Передайте скачанный JSON организатору, если согласны включить ответы в исследование.'
+  }
+  show(false)
+</script>

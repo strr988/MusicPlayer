@@ -1,76 +1,97 @@
-import { readFile, writeFile } from 'node:fs/promises'
+import { writeFile } from 'node:fs/promises'
+import { aggregateRuns, algorithmVersions, catalogSize, check, compareRun, hasFields, integer, mean, methods, metricsOnly, readJson } from './recommendation-research.mjs'
+import { presentationOrder, validateKey } from './pilot-session.mjs'
 
-const [input, output, ...extra] = process.argv.slice(2)
-if (!input || !output || extra.length) {
-  throw new Error('Usage: node scripts/export-pilot-results.mjs <pilot-input.json> <new-aggregate.json>')
-}
-
-const methods = ['A', 'B', 'C']
-const participants = JSON.parse(await readFile(input, 'utf8'))
-if (!Array.isArray(participants) || participants.length === 0) {
-  throw new Error('Expected a nonempty array of completed participant records')
-}
-
-const mean = values => values.reduce((sum, value) => sum + value, 0) / values.length
-const codes = new Set()
-const positions = participants[0]?.A?.length
-if (!Number.isSafeInteger(positions) || positions < 1) throw new Error('Expected a positive queue length')
-
-const summaries = participants.map((record, index) => {
-  const row = index + 1
-  const code = typeof record?.code === 'string' ? record.code.trim() : ''
-  if (!code || codes.has(code)) throw new Error(`Missing or duplicate participant code in record ${row}`)
-  codes.add(code)
-  return Object.fromEntries(methods.map(method => {
-    const queue = record[method]
-    if (!Array.isArray(queue) || queue.length !== positions) {
-      throw new Error(`Expected ${positions} positions in record ${row}, method ${method}`)
-    }
-    const rated = queue.filter((item, index) => {
-      if (item === null) return false
-      if (!Number.isInteger(item?.rating) || item.rating < 1 || item.rating > 5 ||
-          typeof item.skipped !== 'boolean' || typeof item.newLike !== 'boolean') {
-        throw new Error(`Invalid outcome in record ${row}, method ${method}, position ${index + 1}`)
+function validateRatings(ratings, key) {
+  check(hasFields(ratings, ['kind', 'schemaVersion', 'sessionId', 'blocks']) &&
+    ratings.kind === 'pilot-ratings' && ratings.schemaVersion === 2 && ratings.sessionId === key.sessionId &&
+    Array.isArray(ratings.blocks) && ratings.blocks.length === 3, 'Invalid ratings document or mismatched session')
+  return ratings.blocks.map(block => {
+    check(Array.isArray(block) && block.length === key.count, 'Incorrect number of positions in a block')
+    return block.map(answer => {
+      if (hasFields(answer, ['status']) && ['missing', 'audio-error'].includes(answer.status)) {
+        return { status: answer.status }
       }
-      return true
+      check(hasFields(answer, ['status', 'rating', 'familiarity']) && answer.status === 'rated' &&
+        integer(answer.rating, 1, 5) && [null, 'yes', 'no'].includes(answer.familiarity), 'Invalid rating or missing-data code')
+      return { status: 'rated', rating: answer.rating, familiarity: answer.familiarity }
     })
-    if (rated.length === 0) throw new Error(`No rated positions in record ${row}, method ${method}`)
-    return [method, {
-      rating: mean(rated.map(item => item.rating)),
-      skipRate: mean(rated.map(item => Number(item.skipped))),
-      newLikeRate: mean(rated.map(item => Number(item.newLike))),
-      rated: rated.length,
-      excluded: queue.length - rated.length,
-    }]
-  }))
-})
+  })
+}
 
-const aggregates = Object.fromEntries(methods.map(method => {
-  const rows = summaries.map(summary => summary[method])
+const score = answers => mean(answers.filter(answer => answer.status === 'rated').map(answer => answer.rating))
+const [output, ...files] = process.argv.slice(2)
+check(output && files.length > 0 && files.length % 2 === 0,
+  'Usage: node scripts/export-pilot-results.mjs <new-report.json|--check> <key.json> <ratings.json> [...]')
+
+const ids = new Set()
+const slots = new Set()
+const evaluations = []
+const technical = []
+let parameters
+for (let index = 0; index < files.length; index += 2) {
+  const key = validateKey(await readJson(files[index]))
+  const blocks = validateRatings(await readJson(files[index + 1]), key)
+  check(!ids.has(key.sessionId) && !slots.has(key.slot), 'Duplicate session or presentation slot')
+  ids.add(key.sessionId)
+  slots.add(key.slot)
+  const current = { count: key.count, mode: key.snapshot.mode, excerptSeconds: key.excerptSeconds }
+  parameters ??= current
+  check(JSON.stringify(parameters) === JSON.stringify(current), 'Inconsistent pilot conditions')
+  const order = presentationOrder(key.slot)
+  evaluations.push(Object.fromEntries(order.map((method, position) => [method, blocks[position]])))
+  if (output !== '--check') {
+    technical.push({
+      seed: key.snapshot.seed, now: key.snapshot.now, catalog: catalogSize(key.snapshot), order,
+      methods: metricsOnly(compareRun(key.snapshot, key.count)),
+    })
+  }
+}
+
+const summaries = Object.fromEntries(methods.map(method => {
+  const blocks = evaluations.map(row => row[method])
+  const answers = blocks.flat()
   return [method, {
-    meanRating: mean(rows.map(row => row.rating)),
-    meanSkipRate: mean(rows.map(row => row.skipRate)),
-    meanNewLikeRate: mean(rows.map(row => row.newLikeRate)),
-    rated: rows.reduce((sum, row) => sum + row.rated, 0),
-    excluded: rows.reduce((sum, row) => sum + row.excluded, 0),
+    participantsWithRatings: blocks.filter(block => score(block) !== null).length,
+    meanRating: mean(blocks.map(score).filter(value => value !== null)),
+    rated: answers.filter(answer => answer.status === 'rated').length,
+    missing: answers.filter(answer => answer.status === 'missing').length,
+    audioErrors: answers.filter(answer => answer.status === 'audio-error').length,
+    familiarityMissing: answers.filter(answer => answer.status === 'rated' && answer.familiarity === null).length,
   }]
 }))
-
-const pairedRatingDifferences = Object.fromEntries(['A', 'B'].map(method => {
-  const differences = summaries.map(summary => summary.C.rating - summary[method].rating)
-  const average = mean(differences)
-  const sumSquares = differences.reduce((sum, value) => sum + (value - average) ** 2, 0)
-  return [`C-${method}`, {
-    mean: average,
-    sampleStandardDeviation: differences.length > 1 ? Math.sqrt(sumSquares / (differences.length - 1)) : null,
-  }]
-}))
-
-await writeFile(output, JSON.stringify({
-  schemaVersion: 1,
-  kind: 'pilot-aggregates',
-  participants: summaries.length,
-  plannedPositionsPerMethod: positions,
-  methods: aggregates,
-  pairedRatingDifferences,
-}, null, 2) + '\n', { flag: 'wx' })
+const evaluated = evaluations.filter(row => methods.some(method => score(row[method]) !== null)).length
+if (output === '--check') {
+  console.log(JSON.stringify({ validSessions: evaluations.length, sessionsWithRatings: evaluated, methods: summaries }, null, 2))
+} else {
+  const report = {
+    schemaVersion: 2,
+    kind: evaluated ? 'pilot-report' : 'algorithm-benchmark',
+    algorithmVersions,
+    parameters: { ...parameters, timingSamples: 100, warmup: 20 },
+    technical: { sessions: technical, aggregate: aggregateRuns(technical.map(session => session.methods)) },
+    userExperiment: 'no-user-ratings',
+  }
+  if (evaluated) {
+    report.userExperiment = {
+      participants: evaluated,
+      submittedSessions: evaluations.length,
+      incompleteSessions: evaluations.filter(row => methods.some(method => row[method].some(answer => answer.status !== 'rated'))).length,
+      ratedRecommendations: Object.values(summaries).reduce((sum, method) => sum + method.rated, 0),
+      methods: summaries,
+      ratings: evaluations,
+      paired: Object.fromEntries(['random', 'preferences'].map(method => {
+        const differences = evaluations.flatMap(row => {
+          const wave = score(row.wave)
+          const other = score(row[method])
+          return wave === null || other === null ? [] : [wave - other]
+        })
+        return [method, { participants: differences.length, mean: mean(differences), differences }]
+      })),
+    }
+  } else {
+    report.submittedSessions = evaluations.length
+    report.missingData = summaries
+  }
+  await writeFile(output, JSON.stringify(report, null, 2) + '\n', { flag: 'wx' })
+}

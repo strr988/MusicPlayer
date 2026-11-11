@@ -204,6 +204,7 @@ export function App() {
                 empty={!libraryLoading && !libraryLoadFailed && tracks.length === 0}
                 unavailable={tracks.length > 0 && !anyAvailable} ready={playback.ready && !importing && !libraryLoading && !libraryLoadFailed}
                 active={playback.mode === 'wave'} playing={playback.playing} loading={playback.loading}
+                recommendation={playback.recommendation}
                 title={playback.track?.title} notice={playback.waveNotice} start={playback.startWave}
                 openLibrary={() => { openSection('library'); libraryLink.current?.focus() }} />
             </div>

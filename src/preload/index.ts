@@ -4,6 +4,7 @@ import type { MusicPlayerApi } from '../shared/contracts'
 
 const api: MusicPlayerApi = {
   getWaveQueue: () => ipcRenderer.invoke(channels.getWaveQueue),
+  getWaveRecommendations: () => ipcRenderer.invoke(channels.getWaveRecommendations),
   getWaveMode: () => ipcRenderer.invoke(channels.getWaveMode),
   setWaveMode: (mode) => ipcRenderer.invoke(channels.setWaveMode, mode),
   getPlaylists: () => ipcRenderer.invoke(channels.getPlaylists),

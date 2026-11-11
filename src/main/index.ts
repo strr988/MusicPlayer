@@ -11,7 +11,8 @@ import { serveMedia } from './media'
 import { Artwork } from './artwork'
 import { validatePlaybackEvent, validatePreference } from './feedback-validation'
 import { validatePlaybackSession } from './playback-session'
-import { generateWave } from '../recommendations/engine'
+import { explainWave, generateWave } from '../recommendations/engine'
+import type { RecommendationContext } from '../recommendations/engine'
 
 const scheme = 'music-player'
 const idPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
@@ -73,14 +74,22 @@ function registerIpc(library: Library): void {
     if (args.length !== 1) throw new Error('Unexpected playback session arguments')
     library.setPlaybackSession(validatePlaybackSession(args[0]))
   })
+  async function waveContext(): Promise<RecommendationContext> {
+    const candidates = await library.getRecommendationCandidates()
+    return {
+      candidates, listening: library.getListeningData(), now: Date.now(),
+      seed: randomInt(2 ** 32), mode: library.getWaveMode(),
+    }
+  }
   ipcMain.handle(channels.getWaveQueue, async (event, ...args: unknown[]) => {
     senderWindow(event)
     if (args.length !== 0) throw new Error('Unexpected wave arguments')
-    const candidates = await library.getRecommendationCandidates()
-    return generateWave({
-      candidates, listening: library.getListeningData(), now: Date.now(),
-      seed: randomInt(2 ** 32), mode: library.getWaveMode(),
-    }, 10)
+    return generateWave(await waveContext(), 10)
+  })
+  ipcMain.handle(channels.getWaveRecommendations, async (event, ...args: unknown[]) => {
+    senderWindow(event)
+    if (args.length !== 0) throw new Error('Unexpected wave arguments')
+    return explainWave(await waveContext(), 10)
   })
   ipcMain.handle(channels.getWaveMode, (event) => {
     senderWindow(event)

@@ -1,11 +1,8 @@
-import { readFile } from 'node:fs/promises'
-import { performance } from 'node:perf_hooks'
-import { artistKey, generateWave, preferenceQueue, randomQueue } from '../src/recommendations/engine.ts'
-import { measureQueue } from '../src/recommendations/metrics.ts'
+import { aggregateRuns, algorithmVersions, catalogSize, check, compareRun, integer, metricsOnly, readJson, validateSnapshot } from './recommendation-research.mjs'
 
-const [snapshotPath, countInput = '8'] = process.argv.slice(2)
+const [snapshotPath = '--example', countInput = '8', seedList, ...extra] = process.argv.slice(2)
 const count = Number(countInput)
-if (!Number.isSafeInteger(count) || count < 1) throw new Error('Expected a positive integer queue length')
+check(!extra.length && integer(count, 1, 50_000), 'Expected snapshot path or --example, queue length and optional comma-separated seeds')
 
 const now = Date.UTC(2026, 10, 11)
 const timestamp = new Date(now - 60_000).toISOString()
@@ -28,36 +25,21 @@ const example = {
     ],
   },
 }
-const context = snapshotPath ? JSON.parse(await readFile(snapshotPath, 'utf8')) : example
-const artistById = new Map(context.candidates.map(track => [track.id, artistKey(track.artist)]))
-const available = new Set(context.candidates.filter(track => track.available).map(track => track.id))
-const recentStarts = context.listening.events
-  .filter(event => event.type === 'started' && available.has(event.trackId) && Date.parse(event.timestamp) <= context.now)
-  .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp))
-  .reverse()
-const recentlyPlayed = new Set([...new Set(recentStarts.map(event => event.trackId))].slice(0, 5))
-
-const results = Object.entries({ random: randomQueue, preferences: preferenceQueue, wave: generateWave })
-  .map(([method, engine]) => {
-    const ids = engine(context, count)
-    for (let i = 0; i < 20; i++) engine(context, count)
-    const times = Array.from({ length: 100 }, () => {
-      const start = performance.now()
-      engine(context, count)
-      return performance.now() - start
-    }).sort((a, b) => a - b)
-    return {
-      method, ids,
-      ...measureQueue(ids, artistById, recentlyPlayed),
-      medianMs: (times[49] + times[50]) / 2,
-      p95Ms: times[94],
-    }
-  })
+const synthetic = snapshotPath === '--example'
+const context = validateSnapshot(synthetic ? example : await readJson(snapshotPath))
+const seeds = seedList === undefined ? (synthetic ? [42, 43, 44, 45, 46, 47] : [context.seed]) :
+  seedList.split(',').map(item => item.trim() ? Number(item) : NaN)
+check(seeds.every(seed => integer(seed, 0, 0xffffffff)) && new Set(seeds).size === seeds.length,
+  'Expected unique unsigned 32-bit seeds')
+const runs = seeds.map(seed => ({ seed, methods: metricsOnly(compareRun({ ...context, seed }, count)) }))
 console.log(JSON.stringify({
+  schemaVersion: 2,
   kind: 'algorithm-benchmark',
-  input: snapshotPath ? 'provided-snapshot' : 'synthetic-example',
-  seed: context.seed,
-  now: context.now,
-  requestedTracks: count,
-  results,
+  input: synthetic ? 'synthetic-example' : 'provided-snapshot',
+  userExperiment: 'no-user-ratings',
+  algorithmVersions,
+  parameters: { now: context.now, mode: context.mode, count, timingSamples: 100, warmup: 20 },
+  catalog: catalogSize(context),
+  runs,
+  aggregate: aggregateRuns(runs.map(run => run.methods)),
 }, null, 2))

@@ -1,5 +1,6 @@
 export const channels = {
   getWaveQueue: 'recommendations:get-wave-queue',
+  getWaveRecommendations: 'recommendations:get-wave-recommendations',
   getWaveMode: 'recommendations:get-mode',
   setWaveMode: 'recommendations:set-mode',
   getPlaylists: 'playlists:get',
@@ -40,6 +41,41 @@ export interface LibraryTrack extends Track {
 
 export const waveModes = ['familiar', 'balance', 'discovery'] as const
 export type WaveMode = typeof waveModes[number]
+
+export interface WaveScoreFactors {
+  likedTrack: number
+  likedArtist: number
+  likedGenre: number
+  unheard: number
+  completions: number
+  skips: number
+}
+
+export interface WaveDecision {
+  trackId: string
+  score: number
+  factors: WaveScoreFactors
+  remaining: number
+  recentExcluded: number
+  recentRelaxed: boolean
+  sameArtistExcluded: number
+  eligible: number
+  selection: 'only-eligible' | 'highest-score' | 'seeded-tie' | 'exploration'
+  prioritizedUnheard: boolean
+  explorationRoll: number
+  tiedForChoice: number
+}
+
+export interface WaveRecommendations {
+  algorithmVersion: string
+  mode: WaveMode
+  calculatedAt: number
+  reactionWindowMs: number
+  recentLimit: number
+  seed: number
+  explorationChance: number
+  decisions: WaveDecision[]
+}
 
 export const playlistNameLimit = 100
 export interface Playlist {
@@ -115,6 +151,7 @@ export interface ListeningDataReader { getListeningData(): ListeningData }
 
 export interface MusicPlayerApi {
   getWaveQueue(): Promise<string[]>
+  getWaveRecommendations(): Promise<WaveRecommendations>
   getWaveMode(): Promise<WaveMode>
   setWaveMode(mode: WaveMode): Promise<void>
   getPlaylists(): Promise<Playlist[]>

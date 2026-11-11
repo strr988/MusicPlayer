@@ -9,6 +9,7 @@ import { promisify } from 'node:util'
 import executable from 'electron'
 import { flacWithArtwork, mp3WithArtwork, mp3WithMetadata } from './fixtures/artwork.ts'
 import { catalogSize, fixtureMetadata } from './fixtures/interface-catalog.mjs'
+import { prepareSession } from '../scripts/pilot-session.mjs'
 
 async function prepareElectron(t, { withArtwork = false, withCatalog = false } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'music-player-desktop-'))
@@ -80,4 +81,22 @@ test('Wave honors manual queue priorities, feedback and Media Session actions', 
 test('interface preserves playback and keyboard focus at four desktop sizes', { timeout: 40_000 }, async (t) => {
   const { run } = await prepareElectron(t, { withCatalog: true })
   await run('interface')
+})
+
+test('offline blind pilot plays local audio and exports only explicitly submitted answers', { timeout: 40_000 }, async t => {
+  const { fixtures } = await prepareElectron(t)
+  const manifestPath = join(fixtures, 'audio-map.json')
+  await writeFile(manifestPath, JSON.stringify({ track: '01.mp3' }))
+  const output = join(fixtures, 'session')
+  await prepareSession({
+    snapshot: {
+      now: Date.UTC(2026, 10, 11), seed: 42, candidates: [{ id: 'track', artist: null, genres: [], available: true }],
+      listening: { events: [], preferences: [] },
+    },
+    manifestPath, output, slot: 3, count: 1, excerptSeconds: 30,
+  })
+  const entry = fileURLToPath(new URL('./pilot-smoke.mjs', import.meta.url))
+  await promisify(execFile)(executable, [
+    entry, join(output, 'participant', 'listen.html'), join(fixtures, 'ratings.json'), join(fixtures, 'profile'),
+  ], { timeout: 35_000 })
 })

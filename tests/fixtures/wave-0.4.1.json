@@ -1,0 +1,97 @@
+{
+  "now": 1794355200000,
+  "snapshots": [
+    {
+    "candidates": [
+      {"id":"a","artist":"A","genres":["Rock"],"available":true},
+      {"id":"b","artist":null,"genres":[],"available":true},
+      {"id":"c","artist":"B","genres":["Rock"],"available":true},
+      {"id":"d","artist":"C","genres":[],"available":true},
+      {"id":"e","artist":"C","genres":["Rock"],"available":true},
+      {"id":"f","artist":"A","genres":[],"available":true},
+      {"id":"g","artist":null,"genres":["Rock"],"available":true},
+      {"id":"h","artist":"B","genres":[],"available":true},
+      {"id":"i","artist":"C","genres":["Rock"],"available":true},
+      {"id":"x","artist":"C","genres":[],"available":false}
+    ],
+    "listening": {
+    "events": [
+
+    ],
+    "preferences": [
+
+    ]
+    }
+    },
+    {
+    "candidates": [
+      {"id":"a","artist":"A","genres":["Rock"],"available":true},
+      {"id":"b","artist":null,"genres":[],"available":true},
+      {"id":"c","artist":"B","genres":["Rock"],"available":true},
+      {"id":"d","artist":"C","genres":[],"available":true},
+      {"id":"e","artist":"C","genres":["Rock"],"available":true},
+      {"id":"f","artist":"A","genres":[],"available":true},
+      {"id":"g","artist":null,"genres":["Rock"],"available":true},
+      {"id":"h","artist":"B","genres":[],"available":true},
+      {"id":"i","artist":"C","genres":["Rock"],"available":true},
+      {"id":"x","artist":"C","genres":[],"available":false}
+    ],
+    "listening": {
+    "events": [
+      {"trackId":"a","type":"started","timestamp":"2026-11-10T23:59:59.999Z"},
+      {"trackId":"c","type":"started","timestamp":"2026-11-10T23:59:59.999Z"},
+      {"trackId":"d","type":"started","timestamp":"2026-11-10T23:59:59.999Z"},
+      {"trackId":"e","type":"started","timestamp":"2026-11-10T23:59:59.999Z"},
+      {"trackId":"f","type":"started","timestamp":"2026-11-10T23:59:59.999Z"},
+      {"trackId":"g","type":"started","timestamp":"2026-11-10T23:59:59.999Z"},
+      {"trackId":"h","type":"started","timestamp":"2026-11-10T23:59:59.999Z"},
+      {"trackId":"a","type":"skipped","timestamp":"2026-11-10T23:59:59.999Z"},
+      {"trackId":"a","type":"completed","timestamp":"2026-11-10T23:59:59.999Z"}
+    ],
+    "preferences": [
+      {"trackId":"a","liked":true},
+      {"trackId":"x","liked":true}
+    ]
+    }
+    },
+    {
+    "candidates": [
+      {"id":"a","artist":"A","genres":["Rock"],"available":true},
+      {"id":"b","artist":null,"genres":[],"available":true}
+    ],
+    "listening": {
+    "events": [
+      {"trackId":"a","type":"started","timestamp":"2026-11-10T23:59:59.999Z"},
+      {"trackId":"c","type":"started","timestamp":"2026-11-10T23:59:59.999Z"},
+      {"trackId":"d","type":"started","timestamp":"2026-11-10T23:59:59.999Z"},
+      {"trackId":"e","type":"started","timestamp":"2026-11-10T23:59:59.999Z"},
+      {"trackId":"f","type":"started","timestamp":"2026-11-10T23:59:59.999Z"},
+      {"trackId":"g","type":"started","timestamp":"2026-11-10T23:59:59.999Z"},
+      {"trackId":"h","type":"started","timestamp":"2026-11-10T23:59:59.999Z"},
+      {"trackId":"a","type":"skipped","timestamp":"2026-11-10T23:59:59.999Z"},
+      {"trackId":"a","type":"completed","timestamp":"2026-11-10T23:59:59.999Z"}
+    ],
+    "preferences": [
+      {"trackId":"a","liked":true}
+    ]
+    }
+    }
+  ],
+  "cases": [
+[
+      {"seed":0,"random":["f","d","g","e","i","h","b","a","c"],"preferences":["f","d","g","e","i","h","b","a","c"],"familiar":["f","d","g","e","h","i","b","a","c"],"balance":["f","d","g","e","h","i","b","a","c"],"discovery":["f","d","g","e","h","i","b","a","c"]},
+      {"seed":42,"random":["h","b","g","c","a","e","i","d","f"],"preferences":["h","b","g","c","a","e","i","d","f"],"familiar":["h","b","g","c","a","e","f","i","d"],"balance":["h","b","g","c","a","e","f","i","d"],"discovery":["h","b","g","c","a","e","f","i","d"]},
+      {"seed":4294967295,"random":["h","a","d","c","e","g","f","b","i"],"preferences":["h","a","d","c","e","g","f","b","i"],"familiar":["h","a","d","c","e","g","f","b","i"],"balance":["h","a","d","c","e","g","f","b","i"],"discovery":["h","a","d","c","e","g","f","b","i"]}
+    ],
+[
+      {"seed":0,"random":["f","d","g","e","i","h","b","a","c"],"preferences":["a","e","i","f","d","g","c","h","b"],"familiar":["a","i","b","e","f","d","g","c","h"],"balance":["a","i","b","e","f","d","g","c","h"],"discovery":["i","b","a","e","f","d","g","c","h"]},
+      {"seed":42,"random":["h","b","g","c","a","e","i","d","f"],"preferences":["a","e","i","d","f","g","c","h","b"],"familiar":["a","i","b","e","f","d","g","c","h"],"balance":["a","i","b","e","f","d","g","c","h"],"discovery":["i","a","b","e","f","d","g","c","h"]},
+      {"seed":4294967295,"random":["h","a","d","c","e","g","f","b","i"],"preferences":["a","e","i","d","f","c","g","h","b"],"familiar":["a","i","c","e","f","d","g","b","h"],"balance":["a","i","c","e","f","d","b","g","h"],"discovery":["a","i","b","e","f","d","c","g","h"]}
+    ],
+[
+      {"seed":0,"random":["b","a"],"preferences":["a","b"],"familiar":["b","a"],"balance":["b","a"],"discovery":["b","a"]},
+      {"seed":42,"random":["a","b"],"preferences":["a","b"],"familiar":["b","a"],"balance":["b","a"],"discovery":["b","a"]},
+      {"seed":4294967295,"random":["a","b"],"preferences":["a","b"],"familiar":["b","a"],"balance":["b","a"],"discovery":["b","a"]}
+    ]
+  ]
+}

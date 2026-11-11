@@ -226,4 +226,18 @@ export async function verifyInterface({ player, run, click, waitFor, waitForAudi
   await waitForAudio('!audio.paused && audio.currentTime > 0.1', 'Wave starts from its dedicated section')
   await waitFor('document.querySelector(".wave-status[role=status]")?.innerText.includes("Сейчас играет")', 'Wave reports active playback')
   await capture('02-wave-900x700')
+  await waitFor('!!document.querySelector(".wave-explanation summary")', 'Wave explanation is available')
+  await click('Пауза')
+  await waitForAudio('audio.paused', 'Pause before capturing the explanation')
+  await run('document.querySelector(".wave-explanation summary").click()')
+  await waitFor('document.querySelector(".wave-explanation").open', 'short explanation opens')
+  await capture('08-wave-explanation-900x700')
+  await size(1280, 900)
+  await run('document.querySelector(".wave-diagnostics summary").click()')
+  await waitFor('document.querySelector(".wave-diagnostics").open', 'technical details open')
+  await run(`(async () => {
+    document.querySelector(".wave-diagnostics").scrollIntoView({ block: "center" })
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+  })()`)
+  await capture('09-wave-diagnostics-1280x900')
 }

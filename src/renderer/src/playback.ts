@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { queueEntryLimit } from '../../shared/contracts'
-import type { LibraryTrack, PlaybackEventInput, PlaybackQueue, Playlist, QueueEntry, QueueSource, RepeatMode, VolumePreference } from '../../shared/contracts'
+import type { LibraryTrack, PlaybackEventInput, PlaybackQueue, Playlist, QueueEntry, QueueSource, RepeatMode, VolumePreference, WaveDecision, WaveRecommendations } from '../../shared/contracts'
 import { ListeningSession } from './listening-session'
 import { emptyQueue, enqueue, goBack, movePending, previousEntry, removePending, repeatQueue, setShuffle, startQueue, takePending } from './playback-queue'
 
@@ -12,6 +12,14 @@ export function formatTime(seconds: number | null): string {
 
 const newEntry = (trackId: string, kind: QueueEntry['kind']): QueueEntry => ({ id: crypto.randomUUID(), trackId, kind })
 type Transition = 'next' | 'back' | 'restart' | 'jump'
+
+export interface RecommendationExplanation {
+  calculation: Omit<WaveRecommendations, 'decisions'>
+  decision: WaveDecision
+  rank: number
+  previousTrackExcluded: boolean
+  attemptedExcluded: number
+}
 
 export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: string) => void) {
   const audio = useRef<HTMLAudioElement>(null)
@@ -68,6 +76,7 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
   const saveRevision = useRef(0)
   const lastCheckpoint = useRef(0)
   const [waveNotice, setWaveNotice] = useState('')
+  const [explanations, setExplanations] = useState<Map<string, RecommendationExplanation>>(() => new Map())
   const [playing, setPlaying] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -175,6 +184,7 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
     const savedPosition = options.restore ? position.current : 0
     const token = resetAudio(element)
     if (options.fresh) {
+      setExplanations(new Map())
       remember = false
       played.current = false
       position.current = 0
@@ -202,18 +212,34 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
             // The terminal event must reach Main before it takes a recommendation snapshot.
             await writes.current
             if (token !== request.current) return
-            const recommendations = await window.musicPlayer.getWaveQueue()
+            const { decisions, ...calculation } = await window.musicPlayer.getWaveRecommendations()
             if (token !== request.current) return
             state = queueRef.current
             id = state.pending[0]
             if (!id) {
-              const trackId = recommendations.find(item => !attempted.has(item) && (options.allowSame || item !== previousTrack))
-              if (!trackId) {
-                setWaveNotice(recommendations.length ? 'В «Моей волне» больше нет других доступных треков.' :
+              let previousTrackExcluded = false
+              let attemptedExcluded = 0
+              const index = decisions.findIndex(({ trackId }) => {
+                if (attempted.has(trackId)) {
+                  attemptedExcluded++
+                  return false
+                }
+                if (!options.allowSame && trackId === previousTrack) {
+                  previousTrackExcluded = true
+                  return false
+                }
+                return true
+              })
+              const decision = decisions[index]
+              if (!decision) {
+                setWaveNotice(decisions.length ? 'В «Моей волне» больше нет других доступных треков.' :
                   'Для «Моей волны» нет доступных треков. Проверьте папки с музыкой.')
                 break
               }
-              const recommendation = newEntry(trackId, 'recommendation')
+              const recommendation = newEntry(decision.trackId, 'recommendation')
+              setExplanations(previous => new Map([...previous].slice(-99)).set(recommendation.id, {
+                calculation, decision, rank: index + 1, previousTrackExcluded, attemptedExcluded,
+              }))
               id = recommendation.id
               state = { ...state, entries: [...state.entries, recommendation] }
             }
@@ -324,6 +350,7 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
     queue, entriesById, tracksById, track, mode, playlistName: queue.source.type === 'playlist' ? queue.source.name : undefined,
     playing, loading, ready: sessionReady && !!volume, error: error || feedbackError || volumeError || storageError,
     waveNotice, duration, restoredPosition, volume, changeVolume, canGoBack, canGoNext,
+    recommendation: current?.kind === 'recommendation' ? { entryId: current.id, explanation: explanations.get(current.id) } : undefined,
     addToQueue, pause, resume, toggle, step, seek,
     changeShuffle: () => {
       const state = queueRef.current
