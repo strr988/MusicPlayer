@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto'
 import { lstat, open, readdir, realpath } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import { basename, extname, isAbsolute, join, relative, sep } from 'node:path'
-import { parseFile } from 'music-metadata'
-import type { ImportIssue, ImportResult, Track, ListeningDataReader, PlaybackEventInput } from '../shared/contracts'
+import { parseFile, parseStream } from 'music-metadata'
+import type { ImportIssue, ImportResult, LibraryTrack, Track, ListeningDataReader, PlaybackEventInput, VolumePreference } from '../shared/contracts'
 import type { RecommendationCandidate } from '../recommendations/engine'
 import { LibraryStore } from './library-store'
 import type { LocalSource, ScanEntry } from './library-store'
@@ -17,13 +17,15 @@ interface ScannedFile {
 }
 
 type CompletedImport = Extract<ImportResult, { status: 'complete' }>
+const metadataLimit = 8 * 1024 * 1024
+const metadataOptions = { skipCovers: true, maxMemoryAllocation: metadataLimit, maxMetadataEntries: 10_000 }
 
 function isWithin(root: string, file: string): boolean {
   const name = relative(root, file)
   return name !== '' && name !== '..' && !name.startsWith(`..${sep}`) && !isAbsolute(name)
 }
 
-async function openVerifiedFile(source: LocalSource): Promise<FileHandle | undefined> {
+async function openVerifiedFile(source: Pick<LocalSource, 'path' | 'identity'>): Promise<FileHandle | undefined> {
   let file: FileHandle | undefined
   try {
     if (await realpath(source.path) !== source.path ||
@@ -34,6 +36,32 @@ async function openVerifiedFile(source: LocalSource): Promise<FileHandle | undef
     // Missing, unreadable or replaced since import.
   }
   await file?.close()
+}
+
+async function readOversizedId3(path: string, identity: FileIdentity) {
+  const file = await openVerifiedFile({ path, identity })
+  if (!file) return
+  try {
+    const header = Buffer.alloc(10)
+    const { bytesRead } = await file.read(header, 0, header.length, 0)
+    const version = header[3]
+    const lengthBytes = header.subarray(6)
+    if (bytesRead !== 10 || header.toString('ascii', 0, 3) !== 'ID3' || version < 2 || version > 4 ||
+        lengthBytes.some(byte => byte > 0x7f)) return
+    const length = lengthBytes.reduce((size, byte) => size * 128 + byte, 0)
+    const start = 10 + length + (version === 4 && (header[5] & 0x10) ? 10 : 0)
+    const size = Number(identity.size)
+    if (length <= metadataLimit || !Number.isSafeInteger(size) || start >= size) return
+    // Import the MPEG audio even if its leading tag exceeds the metadata allocation limit.
+    const stream = file.createReadStream({ start, end: Math.min(size, start + metadataLimit) - 1, autoClose: false })
+    try {
+      return await parseStream(stream, { mimeType: 'audio/mpeg', size: size - start }, metadataOptions)
+    } finally {
+      stream.destroy()
+    }
+  } finally {
+    await file.close()
+  }
 }
 
 async function isAvailable(source: LocalSource): Promise<boolean> {
@@ -67,7 +95,10 @@ export class Library implements ListeningDataReader {
   setTrackPreference(trackId: string, liked: boolean) { return this.store.setTrackPreference(trackId, liked) }
   recordPlaybackEvent(event: PlaybackEventInput): void { this.store.recordPlaybackEvent(event) }
 
-  getTracks(): Track[] {
+  getVolume(): VolumePreference { return this.store.getVolume() }
+  setVolume(volume: VolumePreference): void { this.store.setVolume(volume) }
+
+  getTracks(): LibraryTrack[] {
     return this.store.getTracks()
   }
 
@@ -213,10 +244,10 @@ export class Library implements ListeningDataReader {
     const identity = await lstat(path, { bigint: true })
     if (!identity.isFile() || identity.size === 0n) throw new Error('Invalid file')
 
-    const tags = await parseFile(path, {
-      skipCovers: true,
-      maxMemoryAllocation: 8 * 1024 * 1024,
-      maxMetadataEntries: 10_000,
+    const tags = await parseFile(path, metadataOptions).catch(async error => {
+      const withoutTag = format === 'mp3' && await readOversizedId3(path, identity)
+      if (withoutTag) return withoutTag
+      throw error
     })
     const container = tags.format.container?.toLowerCase()
     if (format === 'flac' ? container !== 'flac' : container !== 'mpeg' || !tags.format.codec?.endsWith('Layer 3')) {

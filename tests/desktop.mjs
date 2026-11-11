@@ -7,8 +7,9 @@ import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import executable from 'electron'
+import { flacWithArtwork, mp3WithArtwork } from './fixtures/artwork.ts'
 
-async function prepareElectron(t) {
+async function prepareElectron(t, withArtwork = false) {
   const directory = await mkdtemp(join(tmpdir(), 'music-player-desktop-'))
   t.after(() => rm(directory, { recursive: true, force: true, maxRetries: 5 }))
   const fixtures = join(directory, 'audio')
@@ -16,6 +17,11 @@ async function prepareElectron(t) {
   await copyFile(new URL('./fixtures/01-tone.mp3', import.meta.url), join(fixtures, '01.mp3'))
   await copyFile(new URL('./fixtures/02-tone.flac', import.meta.url), join(fixtures, '02.flac'))
   await writeFile(join(fixtures, 'broken.mp3'), 'broken')
+  if (withArtwork) {
+    const read = name => readFile(new URL(`./fixtures/${name}`, import.meta.url))
+    await writeFile(join(fixtures, '01.mp3'), mp3WithArtwork(await read('01-tone.mp3'), await read('cover.jpg')))
+    await writeFile(join(fixtures, '02.flac'), flacWithArtwork(await read('02-tone.flac'), await read('cover.png')))
+  }
 
   const entry = fileURLToPath(new URL('./run-electron-smoke.mjs', import.meta.url))
   const profile = join(directory, 'profile')
@@ -24,10 +30,11 @@ async function prepareElectron(t) {
 }
 
 test('built Electron app imports, plays and restores its library across restarts', { timeout: 75_000 }, async (t) => {
-  const { fixtures, run } = await prepareElectron(t)
+  const { fixtures, run } = await prepareElectron(t, true)
+  const originalMp3 = await readFile(join(fixtures, '01.mp3'))
   await run('import')
   await run('restart')
-  assert.deepEqual(await readFile(join(fixtures, '01.mp3')), await readFile(new URL('./fixtures/01-tone.mp3', import.meta.url)))
+  assert.deepEqual(await readFile(join(fixtures, '01.mp3')), originalMp3)
 })
 
 test('personal wave plays offline, reacts to feedback and survives a restart with missing files', { timeout: 75_000 }, async (t) => {

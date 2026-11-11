@@ -6,6 +6,8 @@ export const channels = {
   importFolder: 'library:import-folder',
   getTracks: 'library:get-tracks',
   getPlayableSource: 'playback:get-source',
+  getVolume: 'playback:get-volume',
+  setVolume: 'playback:set-volume',
 } as const
 
 export const playerOrigin = 'music-player://app'
@@ -20,6 +22,10 @@ export interface Track {
   format: 'mp3' | 'flac'
 }
 
+export interface LibraryTrack extends Track {
+  artworkUrl: string | null
+}
+
 export interface ImportIssue {
   entry: string
   reason: 'directory-unreadable' | 'file-unreadable'
@@ -28,10 +34,15 @@ export interface ImportIssue {
 export type ImportResult =
   | { status: 'cancelled' }
   | { status: 'failed' }
-  | { status: 'complete'; tracks: Track[]; processed: number; issues: ImportIssue[] }
+  | { status: 'complete'; tracks: LibraryTrack[]; processed: number; issues: ImportIssue[] }
 
 export interface PlayableSource {
   url: string
+}
+
+export interface VolumePreference {
+  level: number
+  muted: boolean
 }
 
 export interface TrackPreference {
@@ -56,6 +67,8 @@ export interface MusicPlayerApi {
   setTrackPreference(trackId: string, liked: boolean): Promise<TrackPreference>
   recordPlaybackEvent(event: PlaybackEventInput): Promise<void>
   importFolder(): Promise<ImportResult>
-  getTracks(): Promise<Track[]>
+  getTracks(): Promise<LibraryTrack[]>
   getPlayableSource(trackId: string): Promise<PlayableSource | null>
+  getVolume(): Promise<VolumePreference>
+  setVolume(level: number, muted: boolean): Promise<void>
 }

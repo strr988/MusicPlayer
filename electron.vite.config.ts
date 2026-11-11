@@ -19,6 +19,7 @@ export default defineConfig({
           `script-src 'self'${server ? " 'unsafe-inline'" : ''}`,
           `style-src 'self'${server ? " 'unsafe-inline'" : ''}`,
           `media-src ${server ? 'music-player:' : "'self'"}`,
+          `img-src ${server ? 'music-player://app' : "'self'"}`,
           `connect-src 'self'${server ? ' ws://127.0.0.1:*' : ''}`,
           "base-uri 'none'",
           "form-action 'none'",

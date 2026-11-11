@@ -8,6 +8,7 @@ import { channels, playerOrigin } from '../shared/contracts'
 import type { ImportResult } from '../shared/contracts'
 import { Library } from './library'
 import { serveMedia } from './media'
+import { Artwork } from './artwork'
 import { validatePlaybackEvent, validatePreference } from './feedback-validation'
 import { generateWave } from '../recommendations/engine'
 
@@ -86,6 +87,18 @@ function registerIpc(library: Library): void {
     const source = sourceId && await library.getAvailableSource(sourceId)
     return source ? { url: `${playerOrigin}/audio/${source.id}` } : null
   })
+  ipcMain.handle(channels.getVolume, (event, ...args: unknown[]) => {
+    senderWindow(event)
+    if (args.length !== 0) throw new Error('Unexpected volume arguments')
+    return library.getVolume()
+  })
+  ipcMain.handle(channels.setVolume, (event, ...args: unknown[]) => {
+    senderWindow(event)
+    const [level, muted] = args
+    if (args.length !== 2 || typeof level !== 'number' || !Number.isFinite(level) ||
+        level < 0 || level > 1 || typeof muted !== 'boolean') throw new Error('Invalid volume preference')
+    library.setVolume({ level, muted })
+  })
 }
 
 async function start(): Promise<void> {
@@ -97,6 +110,7 @@ async function start(): Promise<void> {
     return
   }
   const library = new Library(join(userData, 'library.sqlite3'))
+  const artwork = new Artwork(library)
   app.once('will-quit', () => library.close())
   await library.refreshAvailability()
 
@@ -125,6 +139,10 @@ async function start(): Promise<void> {
       const id = url.pathname.slice('/audio/'.length)
       return trackIdPattern.test(id) ? serveMedia(request, library, id) : new Response(null, { status: 404 })
     }
+    if (url.pathname.startsWith('/artwork/')) {
+      const id = url.pathname.slice('/artwork/'.length)
+      return trackIdPattern.test(id) ? artwork.serve(request, id) : new Response(null, { status: 404 })
+    }
     const asset = assets.get(url.pathname)
     return asset ? net.fetch(asset.href, { method: request.method }) : new Response(null, { status: 404 })
   })
@@ -135,7 +153,7 @@ async function start(): Promise<void> {
     const player = new BrowserWindow({
       width: 1100,
       height: 760,
-      minWidth: 730,
+      minWidth: 620,
       minHeight: 520,
       title: 'Music Player',
       backgroundColor: '#14131a',
@@ -146,6 +164,8 @@ async function start(): Promise<void> {
         contextIsolation: true,
         sandbox: true,
         nodeIntegration: false,
+        // Keep muted playback and automatic transitions running in a hidden window.
+        backgroundThrottling: false,
       },
     })
     window = player

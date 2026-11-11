@@ -51,7 +51,7 @@ it('persists tracks, source IDs and canonical folders across reopening and overl
   expect(db.prepare('SELECT COUNT(*) AS count FROM imported_folders').get()).toEqual({ count: 2 })
   expect(db.prepare('SELECT COUNT(*) AS count FROM sources WHERE available = 1').get()).toEqual({ count: 2 })
   expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
-  expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 2 })
+  expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 3 })
 })
 
 it('retains the track when moving a file on the same volume and revokes the old media ID', async () => {
@@ -69,17 +69,20 @@ it('retains the track when moving a file on the same volume and revokes the old 
   const reopened = openLibrary()
   await reopened.refreshAvailability()
   expect(await reopened.getAvailableSource(oldSource)).toBeUndefined()
-  expect((await reopened.importFolder(destination)).tracks).toEqual(imported.tracks)
+  const moved = await reopened.importFolder(destination)
   const newSource = reopened.getSourceId(id)!
   expect(newSource).not.toBe(oldSource)
+  expect(moved.tracks).toEqual([{ ...imported.tracks[0], artworkUrl: `music-player://app/artwork/${newSource}` }])
   expect(await reopened.getAvailableSource(newSource)).toMatchObject({ path: await realpath(to) })
   expect(await reopened.getAvailableSource(oldSource)).toBeUndefined()
   expect(await readFile(to)).toEqual(await readFile(mp3))
 
   const upperCase = join(destination, 'RENAMED.mp3')
   await rename(to, upperCase)
-  expect((await reopened.importFolder(destination)).tracks).toEqual(imported.tracks)
-  expect(await reopened.getAvailableSource(reopened.getSourceId(id)!)).toMatchObject({ path: await realpath(upperCase) })
+  const renamed = await reopened.importFolder(destination)
+  const renamedSource = reopened.getSourceId(id)!
+  expect(renamed.tracks).toEqual([{ ...imported.tracks[0], artworkUrl: `music-player://app/artwork/${renamedSource}` }])
+  expect(await reopened.getAvailableSource(renamedSource)).toMatchObject({ path: await realpath(upperCase) })
 
   await copyFile(upperCase, join(destination, 'copy.mp3'))
   const withCopy = await reopened.importFolder(destination)

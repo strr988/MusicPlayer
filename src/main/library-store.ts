@@ -1,5 +1,6 @@
 import { DatabaseSync } from 'node:sqlite'
-import type { Track, ListeningData, ListeningDataReader, PlaybackEventInput, TrackPreference } from '../shared/contracts'
+import { playerOrigin } from '../shared/contracts'
+import type { Track, LibraryTrack, ListeningData, ListeningDataReader, PlaybackEventInput, TrackPreference, VolumePreference } from '../shared/contracts'
 import type { FileIdentity } from './local-file'
 
 const migrations = [
@@ -44,6 +45,12 @@ const migrations = [
   ) STRICT;
   CREATE UNIQUE INDEX one_start_per_session ON playback_events(session_id) WHERE type = 'started';
   CREATE UNIQUE INDEX one_terminal_per_session ON playback_events(session_id) WHERE type <> 'started';`,
+  `CREATE TABLE playback_volume (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    level REAL NOT NULL CHECK (level BETWEEN 0 AND 1),
+    muted INTEGER NOT NULL CHECK (muted IN (0, 1))
+  ) STRICT;
+  INSERT INTO playback_volume VALUES (1, 1, 0);`,
 ]
 
 export interface LocalSource {
@@ -150,10 +157,25 @@ export class LibraryStore implements ListeningDataReader {
     })
   }
 
-  getTracks(): Track[] {
-    const rows = this.db.prepare(`SELECT id, title, artist, album, duration_seconds AS durationSeconds,
-      genres, format FROM tracks ORDER BY rowid`).all() as unknown as (Omit<Track, 'genres'> & { genres: string })[]
-    return rows.map((row) => ({ ...row, genres: JSON.parse(row.genres) as string[] }))
+  getVolume(): VolumePreference {
+    const { level, muted } = this.db.prepare('SELECT level, muted FROM playback_volume WHERE id = 1')
+      .get() as { level: number; muted: number }
+    return { level, muted: muted === 1 }
+  }
+
+  setVolume({ level, muted }: VolumePreference): void {
+    this.db.prepare('UPDATE playback_volume SET level = ?, muted = ? WHERE id = 1').run(level, Number(muted))
+  }
+
+  getTracks(): LibraryTrack[] {
+    const rows = this.db.prepare(`SELECT t.id, title, artist, album, duration_seconds AS durationSeconds,
+      genres, format, (SELECT id FROM sources WHERE track_id = t.id AND provider = 'local'
+        ORDER BY available DESC, rowid LIMIT 1) AS sourceId FROM tracks t ORDER BY t.rowid`)
+      .all() as unknown as (Omit<Track, 'genres'> & { genres: string; sourceId: string | null })[]
+    return rows.map(({ sourceId, genres, ...row }) => ({
+      ...row, genres: JSON.parse(genres) as string[],
+      artworkUrl: sourceId ? `${playerOrigin}/artwork/${sourceId}` : null,
+    }))
   }
 
   getLocalSources(): LocalSource[] {

@@ -1,9 +1,18 @@
-import { useEffect, useState } from 'react'
-import type { ImportIssue, Track, TrackPreference } from '../../shared/contracts'
+import { useEffect, useMemo, useState } from 'react'
+import type { ImportIssue, LibraryTrack, TrackPreference } from '../../shared/contracts'
+import { Artwork } from './artwork'
+import { sortFields, visibleTracks } from './library-view'
+import type { SortDirection, SortField } from './library-view'
 import { formatTime, usePlayback } from './playback'
+import { Timeline } from './timeline'
 
 export function App() {
-  const [tracks, setTracks] = useState<Track[]>([])
+  const [tracks, setTracks] = useState<LibraryTrack[]>([])
+  const [libraryLoading, setLibraryLoading] = useState(true)
+  const [query, setQuery] = useState('')
+  const [sortField, setSortField] = useState<SortField | ''>('')
+  const [direction, setDirection] = useState<SortDirection>('asc')
+  const shown = useMemo(() => visibleTracks(tracks, query, sortField, direction), [tracks, query, sortField, direction])
   const [importing, setImporting] = useState(false)
   const [notice, setNotice] = useState('')
   const [issues, setIssues] = useState<ImportIssue[]>([])
@@ -32,9 +41,13 @@ export function App() {
   }
 
   useEffect(() => {
-    void window.musicPlayer.getTracks().then(setTracks).catch(() => {
-      setNotice('Не удалось открыть библиотеку.')
-    })
+    let active = true
+    void window.musicPlayer.getTracks().then(result => {
+      if (active) setTracks(result)
+    }).catch(() => {
+      if (active) setNotice('Не удалось открыть библиотеку.')
+    }).finally(() => { if (active) setLibraryLoading(false) })
+    return () => { active = false }
   }, [])
 
   async function importFolder(): Promise<void> {
@@ -64,7 +77,7 @@ export function App() {
           <span className="brand-mark" aria-hidden="true">♫</span>
           <span>Music Player</span>
         </div>
-        <button className="primary" onClick={() => void importFolder()} disabled={importing}>
+        <button className="primary" onClick={() => void importFolder()} disabled={importing || libraryLoading}>
           <span aria-hidden="true">＋</span> {importing ? 'Импорт…' : 'Выбрать папку'}
         </button>
       </header>
@@ -73,8 +86,8 @@ export function App() {
         <div className="library-heading flex items-baseline justify-between gap-4">
           <h1>Библиотека</h1>
           <div className="flex items-center gap-4">
-            <span className="muted">Треков: {tracks.length}</span>
-            <button className="primary" disabled={tracks.length === 0 || importing || playback.loading}
+            <span className="muted" role="status">Треков: {shown.length}{query.trim() && ` из ${tracks.length}`}</span>
+            <button className="primary" disabled={tracks.length === 0 || importing || playback.loading || !playback.volume}
               onClick={() => void playback.startWave()}>Моя волна</button>
           </div>
         </div>
@@ -89,26 +102,59 @@ export function App() {
             </ul>
           </details>
         )}
-        {tracks.length === 0 ? (
+        {tracks.length > 0 && (
+          <div className="library-tools">
+            <input type="search" aria-label="Поиск по библиотеке" placeholder="Название, исполнитель или альбом"
+              value={query} onChange={event => setQuery(event.currentTarget.value)} />
+            <label className="sort-control">
+              <span>Сортировка</span>
+              <select value={sortField} onChange={event => setSortField(event.currentTarget.value as SortField | '')}>
+                <option value="">Порядок импорта</option>
+                {Object.entries(sortFields).map(([field, label]) => <option key={field} value={field}>{label}</option>)}
+              </select>
+            </label>
+            <button className="sort-direction" disabled={!sortField}
+              aria-label={direction === 'asc' ? 'Сортировать по убыванию' : 'Сортировать по возрастанию'}
+              title={direction === 'asc' ? 'По возрастанию' : 'По убыванию'}
+              onClick={() => setDirection(previous => previous === 'asc' ? 'desc' : 'asc')}>
+              {direction === 'asc' ? '↑' : '↓'}
+            </button>
+          </div>
+        )}
+        {libraryLoading || (importing && tracks.length === 0) ? (
+          libraryLoading && <p className="notice" role="status">Загружаем библиотеку…</p>
+        ) : tracks.length === 0 ? (
           <div className="empty flex flex-col items-center justify-center text-center">
             <span className="empty-mark" aria-hidden="true">♫</span>
             <h2>Здесь появится ваша музыка</h2>
             <p>Выберите папку с файлами MP3 или FLAC.</p>
           </div>
+        ) : shown.length === 0 ? (
+          <div className="empty search-empty flex flex-col items-center justify-center text-center">
+            <h2>Треки не найдены</h2>
+            <button className="clear-search" onClick={() => setQuery('')}>Очистить поиск</button>
+          </div>
         ) : (
           <table className="tracks">
-            <thead><tr><th>Название</th><th>Исполнитель</th><th>Альбом</th><th>Формат</th><th>Время</th><th>Лайк</th></tr></thead>
+            <thead><tr>
+              {Object.entries(sortFields).slice(0, 3).map(([field, label]) => (
+                <th key={field} aria-sort={sortField === field ? (direction === 'asc' ? 'ascending' : 'descending') : undefined}>{label}</th>
+              ))}
+              <th className="format-column">Формат</th>
+              <th aria-sort={sortField === 'durationSeconds' ? (direction === 'asc' ? 'ascending' : 'descending') : undefined}>Время</th>
+              <th>Лайк</th>
+            </tr></thead>
             <tbody>
-              {tracks.map((track) => (
+              {shown.map((track) => (
                 <tr key={track.id} data-current={track.id === playback.track?.id}>
-                  <td><button className="track-button" onClick={() => void playback.select(track.id)}
+                  <td><button className="track-button" disabled={!playback.volume} onClick={() => playback.select(track.id)}
                     aria-current={track.id === playback.track?.id ? 'true' : undefined}>
-                    <span aria-hidden="true" className="track-icon">{track.id === playback.track?.id && playback.playing ? '♫' : '▶'}</span>
+                    <Artwork key={track.artworkUrl} url={track.artworkUrl} />
                     <span className="truncate" title={track.title}>{track.title}</span>
                   </button></td>
                   <td className="truncate" title={track.artist ?? undefined}>{track.artist ?? '—'}</td>
                   <td className="truncate" title={track.album ?? undefined}>{track.album ?? '—'}</td>
-                  <td><span className="format">{track.format.toUpperCase()}</span></td>
+                  <td className="format-column"><span className="format">{track.format.toUpperCase()}</span></td>
                   <td>{formatTime(track.durationSeconds)}</td>
                   <td><button aria-label={`Лайк: ${track.title}`}
                     aria-pressed={likedTrackIds.has(track.id)}
@@ -127,29 +173,38 @@ export function App() {
         {playback.mode === 'wave' && <p className="notice" role="status">
           {playback.waveNotice || (playback.loading ? 'Подбираем трек для «Моей волны»…' : 'Режим «Моя волна»')}
         </p>}
+        {playback.mode === 'library' && playback.loading && <p className="notice" role="status">Открываем трек…</p>}
         {playback.error && <p className="playback-error" role="alert">{playback.error}</p>}
         <div className="player-main">
           <div className="now-playing flex min-w-0 items-center gap-3">
-            <span className="now-mark" aria-hidden="true">♪</span>
+            <Artwork key={playback.track?.artworkUrl} url={playback.track?.artworkUrl ?? null} eager />
             <div className="min-w-0">
-              <p className="truncate">{playback.track?.title ?? 'Трек не выбран'}</p>
-              {playback.track?.artist && <p className="muted truncate">{playback.track.artist}</p>}
+              <p className="truncate" title={playback.track?.title}>{playback.track?.title ?? 'Трек не выбран'}</p>
+              {playback.track?.artist && <p className="muted truncate" title={playback.track.artist}>{playback.track.artist}</p>}
             </div>
           </div>
           <div className="controls flex items-center justify-center gap-3">
             <button aria-label="Предыдущий трек" title="Предыдущий трек" disabled={!playback.canGoBack} onClick={() => playback.step(-1)}>Ⅰ◀</button>
             <button className="play-button" aria-label={playback.playing ? 'Пауза' : 'Воспроизвести'}
               title={playback.playing ? 'Пауза' : 'Воспроизвести'}
-              disabled={tracks.length === 0 || playback.loading} onClick={playback.toggle}>{playback.playing ? '❚❚' : '▶'}</button>
-            <button aria-label="Следующий трек" title="Следующий трек" disabled={!playback.canGoNext} onClick={() => playback.step(1)}>▶Ⅰ</button>
+              disabled={tracks.length === 0 || playback.loading || !playback.volume} onClick={playback.toggle}>{playback.playing ? '❚❚' : '▶'}</button>
+            <button aria-label="Следующий трек" title="Следующий трек" disabled={!playback.canGoNext || !playback.volume} onClick={() => playback.step(1)}>▶Ⅰ</button>
           </div>
-          <div className="timeline flex items-center gap-2">
-            <span>{formatTime(playback.position)}</span>
-            <input aria-label="Позиция воспроизведения" type="range" min={0} max={playback.duration ?? 0}
-              step={0.01} value={playback.position} disabled={playback.duration === null}
-              onChange={(event) => playback.seek(event.currentTarget.valueAsNumber)} />
-            <span>{formatTime(playback.duration ?? playback.track?.durationSeconds ?? null)}</span>
+          <div className="volume flex items-center gap-2">
+            <button className="mute" aria-label="Без звука" aria-pressed={playback.volume?.muted ?? false}
+              title={playback.volume?.muted ? 'Включить звук' : 'Отключить звук'} disabled={!playback.volume}
+              onClick={() => playback.volume && playback.changeVolume({ ...playback.volume, muted: !playback.volume.muted })}>
+              {playback.volume?.muted ? '🔇' : '🔊'}
+            </button>
+            <input aria-label="Громкость" type="range" min={0} max={100} step={1}
+              value={Math.round((playback.volume?.level ?? 1) * 100)} disabled={!playback.volume}
+              onChange={event => playback.volume && playback.changeVolume({
+                ...playback.volume, level: event.currentTarget.valueAsNumber / 100,
+              })} />
+            <span>{Math.round((playback.volume?.level ?? 1) * 100)}%</span>
           </div>
+          <Timeline audio={playback.audioProps.ref} duration={playback.duration}
+            trackDuration={playback.track?.durationSeconds ?? null} seek={playback.seek} />
         </div>
       </footer>
     </div>

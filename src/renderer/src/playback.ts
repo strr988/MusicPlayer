@@ -1,6 +1,6 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ListeningSession } from './listening-session'
-import type { Track, PlaybackEventInput } from '../../shared/contracts'
+import type { LibraryTrack, PlaybackEventInput, VolumePreference } from '../../shared/contracts'
 
 export function formatTime(seconds: number | null): string {
   if (seconds === null) return '—'
@@ -8,8 +8,40 @@ export function formatTime(seconds: number | null): string {
   return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`
 }
 
-export function usePlayback(tracks: Track[]) {
+export function usePlayback(tracks: LibraryTrack[]) {
   const audio = useRef<HTMLAudioElement>(null)
+  const [volume, setVolume] = useState<VolumePreference | null>(null)
+  const [volumeError, setVolumeError] = useState('')
+  const volumeWrite = useRef(0)
+  useEffect(() => {
+    let active = true
+    const apply = (preference: VolumePreference) => {
+      if (!active || !audio.current) return
+      audio.current.volume = preference.level
+      audio.current.muted = preference.muted
+      setVolume(preference)
+    }
+    void window.musicPlayer.getVolume().then(apply).catch(() => {
+      if (!active) return
+      setVolumeError('Не удалось загрузить громкость.')
+      apply({ level: 1, muted: false })
+    })
+    return () => { active = false }
+  }, [])
+
+  function changeVolume(preference: VolumePreference): void {
+    const element = audio.current
+    if (!element) return
+    element.volume = preference.level
+    element.muted = preference.muted
+    setVolume(preference)
+    setVolumeError('')
+    const revision = ++volumeWrite.current
+    void window.musicPlayer.setVolume(preference.level, preference.muted).catch(() => {
+      if (revision === volumeWrite.current) setVolumeError('Не удалось сохранить громкость.')
+    })
+  }
+
   const request = useRef(0)
   const session = useRef<ListeningSession | null>(null)
   const writes = useRef(Promise.resolve())
@@ -24,7 +56,6 @@ export function usePlayback(tracks: Track[]) {
   const [playing, setPlaying] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [position, setPosition] = useState(0)
   const [duration, setDuration] = useState<number | null>(null)
   const index = tracks.findIndex((track) => track.id === trackId)
   const track = tracks[index]
@@ -46,7 +77,6 @@ export function usePlayback(tracks: Track[]) {
     element.removeAttribute('src')
     element.load()
     setPlaying(false)
-    setPosition(0)
     setDuration(null)
     setLoading(true)
     return current
@@ -139,7 +169,8 @@ export function usePlayback(tracks: Track[]) {
   }
 
   return {
-    track, mode, playing, loading, error: error || feedbackError, waveNotice, position, duration,
+    track, mode, playing, loading, error: error || feedbackError || volumeError, waveNotice, duration,
+    volume, changeVolume,
     canGoBack: mode === 'library' && index > 0,
     canGoNext: mode === 'wave' ? trackId !== null && !loading : index < tracks.length - 1,
     select: (id: string) => {
@@ -154,7 +185,6 @@ export function usePlayback(tracks: Track[]) {
       if (!element || !Number.isFinite(element.duration)) return
       session.current?.suspend()
       element.currentTime = seconds
-      setPosition(seconds)
     },
     audioProps: {
       ref: audio,
@@ -177,7 +207,6 @@ export function usePlayback(tracks: Track[]) {
         setPlaying(false)
         step(1)
       },
-      onTimeUpdate: () => setPosition(audio.current?.currentTime ?? 0),
       onDurationChange: () => {
         const length = audio.current?.duration
         setDuration(length !== undefined && Number.isFinite(length) && length > 0 ? length : null)
