@@ -217,3 +217,21 @@ test('restores the playback session written by the original 0.3.0 Windows ZIP', 
   await rm(flac)
   await verifyExe(app, root, profile, folder, 'queue-restart')
 })
+
+const interfaceArchive = process.env.MUSIC_PLAYER_040_ZIP
+test('opens a 0.4.0 profile and restores its session on SQLite schema 5', { skip: !interfaceArchive, timeout: 90_000 }, async (t) => {
+  const { root, folder, profile, app, flac } = await prepareRelease(t)
+  unpack(interfaceArchive, root)
+  await verifyExe(join(root, 'Music Player 0.4.0'), root, profile, folder, 'queue-import', '0.4.0')
+  const database = join(profile, 'library.sqlite3')
+  function checkSchema() {
+    using db = new DatabaseSync(database, { readOnly: true })
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 5)
+    assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), [])
+    return db.prepare('SELECT * FROM tracks ORDER BY rowid').all()
+  }
+  const tracks = checkSchema()
+  await rm(flac)
+  await verifyExe(app, root, profile, folder, 'queue-restart')
+  assert.deepEqual(checkSchema(), tracks)
+})

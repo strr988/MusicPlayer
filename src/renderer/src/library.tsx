@@ -1,10 +1,11 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import type { ImportIssue, LibraryTrack } from '../../shared/contracts'
 import { Artwork } from './artwork'
 import { EmptyState } from './empty-state'
 import { Icon, IconButton } from './icons'
 import { sortFields, visibleTracks } from './library-view'
 import type { SortDirection, SortField } from './library-view'
+import { ListPager, pageSize } from './list-pager'
 import { formatTime } from './playback'
 import { TrackQueueActions } from './queue-panel'
 
@@ -15,7 +16,7 @@ export function Library({ tracks, loading, loadFailed, retryLoad, importing, not
   loadFailed: boolean
   retryLoad: () => void
   importing: boolean
-  notice: string
+  notice?: { text: string; processed?: number }
   issues: ImportIssue[]
   importFolder: () => void
   activeId?: string
@@ -31,7 +32,10 @@ export function Library({ tracks, loading, loadFailed, retryLoad, importing, not
   const [query, setQuery] = useState('')
   const [sortField, setSortField] = useState<SortField | ''>('')
   const [direction, setDirection] = useState<SortDirection>('asc')
+  const [requestedPage, setPage] = useState(0)
   const shown = useMemo(() => visibleTracks(tracks, query, sortField, direction), [tracks, query, sortField, direction])
+  const page = Math.min(requestedPage, Math.max(0, Math.ceil(shown.length / pageSize) - 1))
+  const tableStart = useRef<HTMLDivElement>(null)
   const title = importing ? 'Импорт…' : 'Выбрать папку'
   const importButton = <button type="button" className="primary" onClick={importFolder} disabled={importing || loading}>
     <Icon name="folder" />{title}
@@ -39,7 +43,7 @@ export function Library({ tracks, loading, loadFailed, retryLoad, importing, not
   const sortState = (field: SortField) => sortField === field ? (direction === 'asc' ? 'ascending' : 'descending') : undefined
 
   return <>
-    <header className="section-heading">
+    <header className="section-heading library-heading">
       <div>
         <h1>Библиотека</h1>
         {tracks.length > 0 && <p className="muted" role="status">
@@ -48,13 +52,17 @@ export function Library({ tracks, loading, loadFailed, retryLoad, importing, not
       </div>
       {tracks.length > 0 && importButton}
     </header>
-    {(notice || importing) && <p className="notice" role="status">{importing ? 'Читаем папку…' : notice}</p>}
-    {issues.length > 0 && <details className="issues">
-      <summary>Ошибки импорта ({issues.length})</summary>
-      <ul>{issues.map(issue => <li key={issue.entry}>
+    {importing && <p className="notice" role="status">Читаем папку…</p>}
+    {!importing && notice && <p className={notice.processed ? 'sr-only' : 'notice'} role="status">{notice.text}</p>}
+    {!importing && (notice?.processed || issues.length > 0) ? <details className="import-result">
+      <summary className={issues.length > 0 ? 'danger' : undefined}>
+        {issues.length > 0 ? `Результат импорта · ошибок: ${issues.length}` : 'Результат импорта'}
+      </summary>
+      {notice?.processed && <p>{notice.text}</p>}
+      {issues.length > 0 && <ul>{issues.map(issue => <li key={issue.entry}>
         {issue.entry} — {issue.reason === 'directory-unreadable' ? 'папка недоступна' : 'файл не прочитан'}
-      </li>)}</ul>
-    </details>}
+      </li>)}</ul>}
+    </details> : null}
     {loading ? <p className="notice" role="status">Загружаем библиотеку…</p> :
       loadFailed ? <EmptyState icon="library" title="Не удалось открыть библиотеку"
         action={<button type="button" className="primary" onClick={retryLoad}>Повторить загрузку</button>} /> :
@@ -65,23 +73,29 @@ export function Library({ tracks, loading, loadFailed, retryLoad, importing, not
           <label className="search-control">
             <Icon name="search" />
             <input type="search" aria-label="Поиск по библиотеке" placeholder="Название, исполнитель или альбом"
-              value={query} onChange={event => setQuery(event.currentTarget.value)} />
+              value={query} onChange={event => { setQuery(event.currentTarget.value); setPage(0) }} />
           </label>
           <label className="sort-control">
             <span aria-hidden="true">Сортировка</span>
-            <select aria-label="Сортировка" value={sortField} onChange={event => setSortField(event.currentTarget.value as SortField | '')}>
+            <select aria-label="Сортировка" value={sortField} onChange={event => {
+              setSortField(event.currentTarget.value as SortField | '')
+              setPage(0)
+            }}>
               <option value="">Порядок импорта</option>
               {Object.entries(sortFields).map(([field, label]) => <option key={field} value={field}>{label}</option>)}
             </select>
           </label>
           <IconButton className="sort-direction secondary" icon={direction === 'asc' ? 'up' : 'down'} disabled={!sortField}
             label={direction === 'asc' ? 'Сортировать по убыванию' : 'Сортировать по возрастанию'}
-            onClick={() => setDirection(previous => previous === 'asc' ? 'desc' : 'asc')} />
+            onClick={() => { setDirection(previous => previous === 'asc' ? 'desc' : 'asc'); setPage(0) }} />
         </div>
         {shown.length === 0 ? <EmptyState icon="search" title="Треки не найдены"
           action={<button type="button" className="secondary" onClick={() => setQuery('')}>Очистить поиск</button>}>
           Попробуйте поискать по другому названию, исполнителю или альбому.
         </EmptyState> :
+          <div ref={tableStart} className="track-results">
+            {shown.length > pageSize && <ListPager page={page} count={shown.length} label="Страницы библиотеки"
+              onPage={next => { setPage(next); tableStart.current?.scrollIntoView({ block: 'start' }) }} />}
           <table className="tracks">
             <thead><tr>
               <th scope="col" aria-sort={sortState('title') ?? sortState('artist')}>Композиция</th>
@@ -90,9 +104,9 @@ export function Library({ tracks, loading, loadFailed, retryLoad, importing, not
               <th scope="col" className="time-column" aria-sort={sortState('durationSeconds')}>Время</th>
               <th scope="col" className="actions-column">Действия</th>
             </tr></thead>
-            <tbody>{shown.map(track => {
+            <tbody>{shown.slice(page * pageSize, (page + 1) * pageSize).map(track => {
               const current = track.id === activeId
-              return <tr key={track.id} data-current={current}>
+              return <tr key={track.id} data-current={current} data-unavailable={!track.available}>
                 <td><button type="button" className="track-button" disabled={!ready} onClick={() => select(track.id)}
                   aria-label={track.title} aria-current={current ? 'true' : undefined} title={track.title}>
                   <span className="track-cover">
@@ -101,7 +115,7 @@ export function Library({ tracks, loading, loadFailed, retryLoad, importing, not
                   </span>
                   <span className="track-text">
                     <span className="track-name truncate">{track.title}</span>
-                    <span className="muted truncate" title={track.artist ?? undefined}>{track.artist ?? 'Неизвестный исполнитель'}</span>
+                    <span className="track-artist truncate" title={track.artist ?? undefined}>{track.artist ?? 'Неизвестный исполнитель'}</span>
                     {!track.available && <span className="unavailable">Файл недоступен</span>}
                   </span>
                 </button></td>
@@ -118,7 +132,8 @@ export function Library({ tracks, loading, loadFailed, retryLoad, importing, not
                 </div></td>
               </tr>
             })}</tbody>
-          </table>}
+          </table>
+          </div>}
       </>}
   </>
 }

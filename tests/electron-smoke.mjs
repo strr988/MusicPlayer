@@ -538,7 +538,9 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
   assert.match(library, /Test Tone FLAC/)
   assert.match(library, /Fixture Artist/)
   assert.match(library, /Fixture Album/)
-  assert.match(library, /Ошибки импорта \(1\)/)
+  assert.match(library, /Результат импорта · ошибок: 1/)
+  await run('document.querySelector(".import-result summary").click()')
+  assert.match(await run('document.querySelector(".import-result").innerText'), /broken\.mp3 — файл не прочитан/)
   assert.deepEqual(await run(`(async () => ({
     arbitraryPath: await window.musicPlayer.getPlayableSource('C:/Windows/win.ini'),
     unknownSource: (await fetch('/audio/00000000-0000-0000-0000-000000000000')).status,

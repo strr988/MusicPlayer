@@ -9,6 +9,8 @@ const drawings = {
   search: <><circle cx="10.5" cy="10.5" r="6" /><path d="m15 15 5 5" /></>,
   up: <path d="M12 20V4m-6 6 6-6 6 6" />,
   down: <path d="M12 4v16m-6-6 6 6 6-6" />,
+  left: <path d="m14 6-6 6 6 6" />,
+  right: <path d="m10 6 6 6-6 6" />,
   heart: <path d="M12 20 4.5 12.8a4.7 4.7 0 0 1 6.6-6.7l.9.9.9-.9a4.7 4.7 0 0 1 6.6 6.7Z" />,
   nextInQueue: <path d="M4 5h16M12 20V9m-5 5 5-5 5 5" />,
   plus: <path d="M12 5v14M5 12h14" />,

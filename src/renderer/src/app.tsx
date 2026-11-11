@@ -22,7 +22,7 @@ export function App() {
   const [libraryLoadFailed, setLibraryLoadFailed] = useState(false)
   const [loadAttempt, setLoadAttempt] = useState(0)
   const [importing, setImporting] = useState(false)
-  const [importNotice, setImportNotice] = useState('')
+  const [importNotice, setImportNotice] = useState<{ text: string; processed?: number }>()
   const [issues, setIssues] = useState<ImportIssue[]>([])
   const [notice, setNotice] = useState('')
   const [section, setSection] = useState<Section>('library')
@@ -157,15 +157,17 @@ export function App() {
       if (result.status === 'cancelled') return
       setIssues(result.status === 'complete' ? result.issues : [])
       if (result.status === 'failed') {
-        setImportNotice('Не удалось открыть папку.')
+        setImportNotice({ text: 'Не удалось открыть папку.' })
         return
       }
       trackRead.current++
       setTracks(result.tracks)
-      setImportNotice(result.processed > 0 ? 'Файлов обработано: ' + result.processed : 'В папке нет доступных MP3 и FLAC.')
+      setImportNotice(result.processed > 0 ?
+        { text: 'Файлов обработано: ' + result.processed, processed: result.processed } :
+        { text: 'В папке нет доступных MP3 и FLAC.' })
     } catch {
       setIssues([])
-      setImportNotice('Не удалось импортировать папку.')
+      setImportNotice({ text: 'Не удалось импортировать папку.' })
     } finally {
       setImporting(false)
     }
@@ -175,7 +177,7 @@ export function App() {
   const likeDisabled = !preferencesReady
   return <div className="shell">
     <div className="workspace">
-      <nav className="section-nav" aria-label="Разделы">
+      <nav className="section-nav" aria-label="Разделы" inert={covered}>
         <span className="brand-mark" aria-hidden="true"><Icon name="music" /></span>
         {sections.map(item => <button key={item.id} ref={item.id === "library" ? libraryLink : undefined} type="button" aria-label={item.label} title={item.label}
           aria-current={section === item.id ? 'page' : undefined} onClick={() => openSection(item.id)}
@@ -206,14 +208,14 @@ export function App() {
                 openLibrary={() => { openSection('library'); libraryLink.current?.focus() }} />
             </div>
             <div hidden={section !== 'playlists'}>
-              <Playlists tracks={tracks} playbackReady={playback.ready && !playback.loading}
+              <Playlists active={section === 'playlists'} tracks={tracks} playbackReady={playback.ready && !playback.loading}
                 request={playlistRequest} onPlay={playback.startPlaylist} refreshTracks={refreshTracks} onQueue={playback.addToQueue} />
             </div>
           </div>
         </main>
-        {covered && <div className="queue-scrim" aria-hidden="true" onClick={closeQueue} />}
         {playback.error && <p className="playback-error" role="alert">{playback.error}</p>}
       </div>
+      {covered && <div className="queue-scrim" aria-hidden="true" onClick={closeQueue} />}
       <QueuePanel playback={playback} open={queueOpen} close={closeQueue} closeButton={closeButton} />
     </div>
     <Player playback={playback} hasTracks={tracks.length > 0} liked={!!playback.track && likedTrackIds.has(playback.track.id)}

@@ -26,6 +26,11 @@ export async function verifyInterface({ player, run, click, waitFor, waitForAudi
     webContents.sendInputEvent({ type: 'keyUp', keyCode })
   }
   const focus = selector => run('document.querySelector(' + JSON.stringify(selector) + ').focus()')
+  const setInput = (selector, value) => run(`(() => {
+    const input = document.querySelector(${JSON.stringify(selector)});
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(value)});
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`)
   const size = async (width, height) => {
     player.setContentSize(width, height)
     await waitFor('innerWidth === ' + width + ' && innerHeight === ' + height, 'viewport ' + width + ' × ' + height)
@@ -53,7 +58,25 @@ export async function verifyInterface({ player, run, click, waitFor, waitForAudi
   assert.equal(await run('document.activeElement.getAttribute("aria-label")'), 'Библиотека')
   dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] })
   await click('Выбрать папку')
-  await waitFor('document.querySelectorAll("tbody tr").length === ' + catalogSize, 'representative synthetic library')
+  await waitFor('document.querySelectorAll("tbody tr").length === 100', 'first page of the synthetic library')
+  const libraryPager = '[aria-label="Страницы библиотеки"]'
+  const libraryNext = libraryPager + ' [aria-label="Следующая страница"]'
+  player.focus()
+  webContents.focus()
+  await focus(libraryNext)
+  key('Enter')
+  await waitFor('document.querySelectorAll("tbody tr").length === ' + (catalogSize - 100), 'second page renders the remaining tracks')
+  assert.equal(await run('document.activeElement.matches(' + JSON.stringify(libraryNext) + ')'), true)
+  await setInput('.search-control input', 'Полевая запись · 120')
+  await waitFor('document.querySelectorAll("tbody tr").length === 1 && ' +
+    'document.querySelector("tbody .track-name").textContent === "Полевая запись · 120"', 'search includes tracks outside the first page')
+  await setInput('.search-control input', '')
+  await waitFor('document.querySelector("tbody .track-name").textContent === ' + JSON.stringify(longTitle), 'clearing search returns to first page')
+  await run('document.querySelector("main").scrollTop = 0')
+  assert.equal(await run('document.querySelector(".import-result").open'), false)
+  await run('document.querySelector(".import-result summary").click()')
+  assert.match(await run('document.querySelector(".import-result").innerText'), new RegExp('Файлов обработано: ' + catalogSize))
+  await run('document.querySelector(".import-result summary").click()')
 
   await waitFor('document.querySelector("tbody img")?.naturalWidth > 0', 'embedded cover decoded')
   assert.equal(await run('!document.querySelector("tbody tr:first-child img") && ' +
@@ -104,12 +127,22 @@ export async function verifyInterface({ player, run, click, waitFor, waitForAudi
     assert.equal(await run(noOverflow), true)
     assert.equal(await run('document.querySelector("footer").getBoundingClientRect().height'), playerHeight)
     assert.equal(await run('document.querySelector("main").inert'), width < 1080)
+    assert.equal(await run('document.querySelector(".section-nav").inert'), width < 1080)
+    assert.equal(await run('!!document.querySelector(".queue-scrim")'), width < 1080)
     const openedWidth = await run('document.querySelector("main").getBoundingClientRect().width')
     assert.ok(width < 1080 ? openedWidth === mainWidth : openedWidth < mainWidth)
-    const rows = await pendingRows()
+    const firstPage = await pendingRows()
+    assert.equal(firstPage.length, 100)
+    const queuePager = '[aria-label="Страницы очереди"]'
+    const pageQueue = async label => run('document.querySelector(' + JSON.stringify(queuePager + ' [aria-label="' + label + '"]') + ').click()')
+    await pageQueue('Следующая страница')
+    await waitFor('document.querySelectorAll(".queue-list li").length === ' + (pending - 100), 'queue second page is reachable')
+    const rows = [...firstPage, ...await pendingRows()]
     assert.equal(rows.length, pending)
     assert.equal(rows.filter(row => row.title === longTitle).length, 2)
     assert.equal(new Set(rows.map(row => row.id)).size, pending)
+    await pageQueue('Предыдущая страница')
+    await waitFor('document.querySelectorAll(".queue-list li").length === 100', 'queue returns to the first page')
     assert.equal(await run(String.raw`(() => {
       const main = document.querySelector('main')
       const queue = document.querySelector('.queue-body')
@@ -130,6 +163,18 @@ export async function verifyInterface({ player, run, click, waitFor, waitForAudi
       await waitFor('document.activeElement.textContent === "Очистить ожидающие"', 'queue has a predictable tab order')
       await capture('04-queue-overlay-620x700')
     }
+    if (width === 900) {
+      await focus('.queue-list li:last-child [data-move="1"]')
+      key('Enter')
+      await waitFor('document.activeElement.closest("li")?.dataset.queueEntry === ' +
+        JSON.stringify(rows[99].id), 'moving down across pages keeps the moved row focused')
+      assert.equal((await pendingRows())[0].id, rows[99].id)
+      await focus('.queue-list li:first-child [data-move="-1"]')
+      key('Enter')
+      await waitFor('document.activeElement.closest("li")?.dataset.queueEntry === ' +
+        JSON.stringify(rows[99].id), 'moving up across pages keeps the moved row focused')
+      assert.deepEqual(await pendingRows(), firstPage)
+    }
     if (width === 1280) await capture('03-queue-docked-1280x800')
     key('Escape')
     await waitFor('document.querySelector(".queue-panel").hidden && document.activeElement.matches(".queue-toggle")', 'Escape closes queue and restores focus')
@@ -139,13 +184,9 @@ export async function verifyInterface({ player, run, click, waitFor, waitForAudi
   await capture('01-library-1480x1024')
 
   await click('Добавить в плейлист: ' + longTitle)
-  await waitFor('document.activeElement.id === "playlist-heading"', 'library action opens the playlist section')
+  await waitFor('document.activeElement.textContent.trim() === "Создать плейлист"', 'library shortcut focuses the first playlist action')
   await click('Создать плейлист')
-  await run(String.raw`(() => {
-    const input = document.querySelector('[aria-label="Название плейлиста"]')
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'Ночная смена')
-    input.dispatchEvent(new Event('input', { bubbles: true }))
-  })()`)
+  await setInput('[aria-label="Название плейлиста"]', 'Ночная смена')
   await click('Сохранить')
   await waitFor('document.querySelector(\'select[aria-label="Трек для добавления"]\')?.value', 'new playlist has the requested track preselected')
   await click('Добавить')
@@ -153,10 +194,26 @@ export async function verifyInterface({ player, run, click, waitFor, waitForAudi
   for (const [index, title] of ['Полярная ночь', 'Километр тишины'].entries()) {
     await click('Библиотека')
     await click('Добавить в плейлист: ' + title)
+    await waitFor('document.activeElement.getAttribute("aria-label") === "Трек для добавления"', 'library shortcut focuses the track picker')
     await click('Добавить')
     await waitFor('document.querySelectorAll(".playlist-track").length === ' + (index + 2), 'another track added')
   }
+  await run('document.querySelector("main").scrollTop = 0')
   await capture('06-playlists-1480x1024')
+  await click('Переименовать')
+  const longName = 'Очень длинное название плейлиста для проверки переноса в компактном окне'
+  await setInput('[aria-label="Название плейлиста"]', longName)
+  await click('Сохранить')
+  await waitFor('document.querySelector(".playlist-identity h2").textContent === ' + JSON.stringify(longName), 'long playlist name is shown in the detail header')
+  for (const [width, height] of [[620, 700], [900, 700], [1280, 800], [1480, 1024]]) await size(width, height)
+  await size(620, 700)
+  await click('Удалить плейлист')
+  await waitFor('document.activeElement.textContent === "Отмена"', 'delete confirmation starts on the safe action')
+  assert.match(await run('document.querySelector(".playlist-confirm").innerText'), new RegExp(longName))
+  await capture('07-playlist-delete-620x700')
+  key('Escape')
+  await waitFor('!document.querySelector(".playlist-confirm") && document.activeElement.textContent === "Удалить плейлист"', 'Escape cancels deletion and restores focus')
+  assert.equal(await run('document.querySelectorAll(".playlist-track").length'), 3)
 
   await size(900, 700)
   await click('Моя волна')

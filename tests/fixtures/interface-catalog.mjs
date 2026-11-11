@@ -1,5 +1,5 @@
 export const longTitle = 'Последний поезд через город, где фонари гаснут только на рассвете — расширенная студийная версия'
-export const catalogSize = 36
+export const catalogSize = 120
 
 const titles = [
   longTitle, 'Полярная ночь', 'Километр тишины', 'Glass Harbor', 'Свет в окнах', 'Над линией воды',
