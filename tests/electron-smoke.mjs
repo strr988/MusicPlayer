@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, dialog } from 'electron'
+import { verifyInterface } from './interface-smoke.mjs'
 
 async function eventually(check, label) {
   const deadline = Date.now() + 8_000
@@ -25,10 +26,11 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
   const buttons = '[...document.querySelectorAll("button")]'
   const click = (label) => run(`(() => {
     const label = ${JSON.stringify(label)}
-    const candidates = ${buttons}
+    const candidates = ${buttons}.filter(button => button.getClientRects().length && !button.closest('[inert]'))
     const name = button => (button.getAttribute('aria-label') ?? button.innerText).trim()
     const target = candidates.find(button => name(button) === label) ??
       candidates.find(button => name(button).includes(label))
+    if (!target || target.disabled) throw new Error('Button unavailable: ' + label)
     target.click()
   })()`, true)
   const waitFor = async (script, label) => {
@@ -40,8 +42,8 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
         return { player: document.querySelector('footer')?.innerText, width: innerWidth,
           audio: audio && { src: audio.src, paused: audio.paused, time: audio.currentTime,
             muted: audio.muted, error: audio.error?.message },
-          rows: [...document.querySelectorAll('tbody tr')].map(row => row.innerText),
-          images: [...document.images].map(image => ({ src: image.src, width: image.naturalWidth, complete: image.complete }))
+          rows: [...document.querySelectorAll('tbody tr')].slice(0, 6).map(row => row.innerText),
+          images: [...document.images].slice(0, 6).map(image => ({ src: image.src, width: image.naturalWidth, complete: image.complete }))
         }
       })()`)
       throw new Error(`${error.message}\n${JSON.stringify(snapshot)}`, { cause: error })
@@ -60,7 +62,37 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
   })()`)
 
   await waitFor('document.querySelector("h1")?.innerText === "Библиотека"', 'library UI')
-  await waitFor('!document.querySelector("header button").disabled', 'library initialized')
+  await waitFor(`${buttons}.some(button => button.getClientRects().length &&
+    button.innerText.includes('Выбрать папку') && !button.disabled)`, 'library initialized')
+  const modern = !app.isPackaged || !['0.1.1', '0.2.0', '0.3.0'].includes(app.getVersion())
+  const openWave = async () => {
+    if (modern) await click('Моя волна')
+  }
+  const waveStart = modern ? 'document.querySelector(".wave-start .primary")'
+    : `${buttons}.find(button => button.innerText === 'Моя волна')`
+  const startWave = async () => {
+    await openWave()
+    await run(`(${waveStart}).click()`, true)
+  }
+  const waveSelector = 'select[aria-label="Режим «Моей волны»"]'
+  const modeControl = mode => modern
+    ? `document.querySelector('input[name="wave-mode"][value="${mode}"]')`
+    : `document.querySelector('${waveSelector}')`
+  const chooseWaveMode = async mode => {
+    await openWave()
+    if (modern) await run(`${modeControl(mode)}.click()`)
+    else await choose('Режим «Моей волны»', mode)
+  }
+  const checkWaveMode = mode => waitFor(modern
+    ? `(${modeControl(mode)}).checked && !document.querySelector('.wave-modes[aria-busy="true"]')`
+    : `(${modeControl(mode)}).value === '${mode}' && !(${modeControl(mode)}).disabled`, `${mode} setting acknowledged`)
+  const queueToggle = 'button[aria-controls="playback-queue"]'
+  const openQueue = async () => {
+    if (modern) await run(`document.querySelector('${queueToggle}').click()`)
+  }
+  const closeQueue = async () => {
+    if (modern) await click('Закрыть очередь')
+  }
   assert.equal(webContents.getURL(), 'music-player://app/')
   const { sandbox, contextIsolation, nodeIntegration } = webContents.getLastWebPreferences()
   assert.deepEqual({ sandbox, contextIsolation, nodeIntegration }, { sandbox: true, contextIsolation: true, nodeIntegration: false })
@@ -102,6 +134,11 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
   }))`)
   const setRepeat = value => choose('Режим повтора', value)
 
+  if (phase === 'interface') {
+    await verifyInterface({ player, run, click, waitFor, waitForAudio, folder, pendingRows })
+    return
+  }
+
   if (phase === 'verify-v4') {
     const { playlist } = JSON.parse(await readFile(stateFile, 'utf8'))
     assert.deepEqual(await run('window.musicPlayer.getPlaylists()'), [playlist])
@@ -124,19 +161,24 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] })
     await click('Выбрать папку')
     await waitFor('document.querySelectorAll("tbody tr").length === 2', 'Wave queue catalog')
-    await waitFor(`!${buttons}.find(button => button.innerText === 'Моя волна').disabled`, 'Wave ready')
+    await openWave()
+    await waitFor(`!(${waveStart}).disabled`, 'Wave ready')
+    await click('Библиотека')
     await click('Shuffle')
     await setRepeat('all')
     await click('Лайк: Test Tone FLAC')
     await waitFor('(async () => (await window.musicPlayer.getListeningData()).preferences.some(p => p.liked))()', 'Wave like persisted')
-    await click('Моя волна')
+    await startWave()
     const flac = await waitForAudio(`${advancing} && audio.duration === 5`, 'Wave plays liked FLAC')
+    await waitFor('document.querySelector(".wave-status[role=status]")?.innerText.includes("Сейчас играет")', 'Wave shows the active track')
+    await click('Библиотека')
     await waitFor('navigator.mediaSession.metadata?.title === "Test Tone FLAC" && navigator.mediaSession.playbackState === "playing"', 'Windows media metadata')
     await click('Добавить в очередь: Test Tone FLAC')
     await click('Воспроизвести следующим: Test Tone MP3')
+    await openQueue()
     const manual = await pendingRows()
     assert.deepEqual(manual.map(row => row.title), ['Test Tone MP3', 'Test Tone FLAC'])
-    assert.equal(await run(`${buttons}.find(button => button.innerText === 'Shuffle').disabled`), true)
+    assert.equal(await run(`document.querySelector('button[aria-label="Shuffle"]').disabled`), true)
 
     const keyboardSpace = selector => run(`document.querySelector(${JSON.stringify(selector)}).dispatchEvent(
       new KeyboardEvent('keydown', {code: 'Space', bubbles: true, cancelable: true}))`)
@@ -156,7 +198,7 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     await waitForAudio('!audio.paused', 'Media Session play resumes')
     await media('pause')
     await waitForAudio('audio.paused', 'Media Session pause works')
-    await choose('Режим «Моей волны»', 'discovery')
+    await chooseWaveMode('discovery')
     await waitFor('(async () => (await window.musicPlayer.getWaveMode()) === "discovery")()', 'mode changed during manual queue')
     assert.deepEqual(await pendingRows(), manual)
     await media('nexttrack')
@@ -170,6 +212,7 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     const { queue } = await sessionState()
     assert.equal(queue.entries.find(entry => entry.id === queue.current).kind, 'recommendation')
     assert.deepEqual(queue.pending, [])
+    await waitFor('document.querySelector(".queue-current").innerText.includes("Test Tone MP3")', 'open queue reflects recommendation')
     const feedback = await run('window.musicPlayer.getListeningData()')
     assert.deepEqual(feedback.events.map(event => event.type),
       ['started', 'skipped', 'started', 'ended', 'started', 'ended', 'started'])
@@ -189,11 +232,13 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     await waitForAudio(`${advancing} && audio.src === '${mp3}'`, 'queue starts on selected library track')
     await click('Добавить в очередь: Test Tone FLAC')
     await click('Воспроизвести следующим: Test Tone MP3')
+    await openQueue()
     const initial = await pendingRows()
     assert.deepEqual(initial.map(row => row.title), ['Test Tone MP3', 'Test Tone FLAC', 'Test Tone FLAC'])
     assert.equal(new Set(initial.map(row => row.id)).size, 3)
     await click('Shuffle')
-    assert.equal(await run('document.querySelector("button[aria-pressed=true]").innerText'), 'Shuffle')
+    assert.equal(await run(`${buttons}.find(button =>
+      (button.getAttribute('aria-label') ?? button.innerText) === 'Shuffle').getAttribute('aria-pressed')`), 'true')
     await click('Shuffle')
     assert.deepEqual(await pendingRows(), initial)
     await click('Ниже в очереди: Test Tone MP3')
@@ -235,6 +280,7 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     assert.equal((await sessionState()).queue.history.length, 0)
     await click('Очистить ожидающие')
     assert.deepEqual((await sessionState()).queue.pending, [])
+    await closeQueue()
     await click('Shuffle')
     await click('Добавить в очередь: Test Tone FLAC')
     await click('Пауза')
@@ -261,7 +307,9 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     return
   }
   if (phase === 'wave-import' || phase === 'legacy-import') {
-    assert.equal(await run(`${buttons}.find(button => button.innerText === 'Моя волна').disabled`), true)
+    await openWave()
+    assert.equal(await run(`(${waveStart}).disabled`), true)
+    if (modern) await click('Открыть библиотеку')
     assert.deepEqual(await run('window.musicPlayer.getWaveQueue()'), [])
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] })
     await click('Выбрать папку')
@@ -283,7 +331,7 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     await waitFor('(async () => (await window.musicPlayer.getListeningData()).preferences.some(p => p.liked))()', 'wave preference saved')
     assert.deepEqual(await run('window.musicPlayer.getWaveQueue()'), [flacId, mp3Id])
 
-    await click('Моя волна')
+    await startWave()
     const flac = await waitForAudio(`${advancing} && audio.duration === 5 && audio.volume === 0.37`, 'liked FLAC played by wave at saved volume')
     await waitFor('document.querySelector("footer [role=status]").innerText.includes("Режим")', 'wave mode')
     assert.equal(await run('document.querySelectorAll("audio").length'), 1)
@@ -291,6 +339,7 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     await waitForAudio('audio.paused', 'pause in wave')
     const paused = await run('window.musicPlayer.getListeningData()')
     assert.deepEqual(paused.events.map(event => event.type), ['started'])
+    if (modern) await click('Библиотека')
     await click('Лайк: Test Tone MP3')
     await waitFor(`(async () => (await window.musicPlayer.getListeningData()).preferences
       .some(p => p.trackId === ${JSON.stringify(mp3Id)} && p.liked))()`, 'new like saved in wave mode')
@@ -314,8 +363,9 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     assert.equal(await run('window.musicPlayer.getWaveMode()'), 'balance')
     assert.deepEqual(await run('window.musicPlayer.getPlaylists()'), [])
     await waitFor('document.querySelector("audio").muted && document.querySelector("audio").volume === 0.37', 'migrated volume in player')
-    await waitFor(`!${buttons}.find(button => button.innerText === 'Моя волна').disabled`, 'migrated Wave controls ready')
-    await click('Моя волна')
+    await openWave()
+    await waitFor(`!(${waveStart}).disabled`, 'migrated Wave controls ready')
+    await startWave()
     await waitForAudio(`${advancing} && audio.muted`, 'migrated library plays in Balance')
     return
   }
@@ -327,16 +377,17 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     assert.deepEqual(await run('window.musicPlayer.getWaveQueue()'), [mp3Id])
     player.minimize()
     await eventually(() => player.isMinimized(), 'minimized Windows player')
-    await click('Моя волна')
+    await startWave()
     await waitForAudio(`${advancing} && audio.src === ${JSON.stringify(mp3)} && audio.muted`, 'only available track plays muted while minimized')
     player.restore()
     await click('Без звука')
     await waitForAudio('!audio.muted && audio.volume === 0.37', 'unmute after restart restores prior level')
     await waitFor('document.querySelector("footer [role=status]").innerText.includes("других доступных")', 'singleton wave stops after playback')
     await rm(join(folder, '01.mp3'))
-    await click('Моя волна')
+    await startWave()
     await waitFor('document.querySelector("footer [role=status]").innerText.includes("нет доступных")', 'wave handles missing files')
     assert.deepEqual(await run('window.musicPlayer.getWaveQueue()'), [])
+    if (modern) await click('Библиотека')
     await click('Test Tone MP3')
     await waitFor('!document.querySelector("footer [role=status]")', 'manual selection returns to library mode')
     return
@@ -358,8 +409,9 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     return
   }
   if (phase === 'playlist-import') {
-    const waveSelector = 'select[aria-label="Режим «Моей волны»"]'
-    await waitFor(`document.querySelector('${waveSelector}').value === 'balance'`, 'default Balance mode')
+    await openWave()
+    await checkWaveMode('balance')
+    if (modern) await click('Библиотека')
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] })
     await click('Выбрать папку')
     await waitFor('document.querySelectorAll("tbody tr").length === 2', 'catalog for playlists')
@@ -367,9 +419,8 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     const mp3Id = tracks.find(track => track.format === 'mp3').id
     const flacId = tracks.find(track => track.format === 'flac').id
     for (const mode of ['familiar', 'balance', 'discovery']) {
-      await choose('Режим «Моей волны»', mode)
-      await waitFor(`document.querySelector('${waveSelector}').value === '${mode}' &&
-        !document.querySelector('${waveSelector}').disabled`, `${mode} setting acknowledged`)
+      await chooseWaveMode(mode)
+      await checkWaveMode(mode)
       assert.equal(await run('window.musicPlayer.getWaveMode()'), mode)
       assert.deepEqual(new Set(await run('window.musicPlayer.getWaveQueue()')), new Set([mp3Id, flacId]))
     }
@@ -410,9 +461,11 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     assert.equal(await run('document.querySelectorAll("audio").length'), 1)
     if (app.getVersion() !== '0.2.0') {
       await run(`document.querySelector('.playlist-track button[aria-label="Воспроизвести следующим: Test Tone FLAC"]').click()`)
+      await openQueue()
       await waitFor('document.querySelectorAll(".queue-list li").length === 1', 'track queued from playlist')
       assert.deepEqual(await run('window.musicPlayer.getPlaylists()'), newOrder)
       await click('Очистить ожидающие')
+      await closeQueue()
     }
     await rm(join(folder, '02.flac'))
     await click('Воспроизвести плейлист')
@@ -424,7 +477,8 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
   }
   if (phase === 'playlist-restart') {
     const { playlist, mp3, flacId } = JSON.parse(await readFile(stateFile, 'utf8'))
-    await waitFor('document.querySelector(\'select[aria-label="Режим «Моей волны»"]\').value === "discovery"', 'restored Wave mode')
+    await openWave()
+    await checkWaveMode('discovery')
     await waitFor('!document.querySelector(\'nav button:last-child\').disabled', 'restored library')
     await click('Плейлисты')
     await waitFor('document.querySelector(".playlist-track")?.innerText.includes("Файл недоступен")', 'restored unavailable first track')

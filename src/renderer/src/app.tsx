@@ -1,42 +1,88 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { waveModes } from '../../shared/contracts'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ImportIssue, LibraryTrack, TrackPreference, WaveMode } from '../../shared/contracts'
-import { Artwork } from './artwork'
-import { sortFields, visibleTracks } from './library-view'
-import type { SortDirection, SortField } from './library-view'
+import { Icon } from './icons'
+import { Library } from './library'
 import { useMediaControls } from './media-controls'
-import { formatTime, usePlayback } from './playback'
+import { Player } from './player'
+import { usePlayback } from './playback'
 import { Playlists } from './playlists'
-import { QueuePanel, TrackQueueActions } from './queue-panel'
-import { Timeline } from './timeline'
+import { QueuePanel } from './queue-panel'
+import { Wave } from './wave'
 
-const waveModeLabels: Record<WaveMode, string> = {
-  familiar: 'Знакомое', balance: 'Баланс', discovery: 'Открытия',
-}
+const sections = [
+  { id: 'library', label: 'Библиотека', icon: 'library' },
+  { id: 'wave', label: 'Моя волна', icon: 'wave' },
+  { id: 'playlists', label: 'Плейлисты', icon: 'playlists' },
+] as const
+type Section = typeof sections[number]['id']
 
 export function App() {
   const [tracks, setTracks] = useState<LibraryTrack[]>([])
   const [libraryLoading, setLibraryLoading] = useState(true)
-  const [query, setQuery] = useState('')
-  const [sortField, setSortField] = useState<SortField | ''>('')
-  const [direction, setDirection] = useState<SortDirection>('asc')
-  const shown = useMemo(() => visibleTracks(tracks, query, sortField, direction), [tracks, query, sortField, direction])
+  const [libraryLoadFailed, setLibraryLoadFailed] = useState(false)
+  const [loadAttempt, setLoadAttempt] = useState(0)
   const [importing, setImporting] = useState(false)
-  const [notice, setNotice] = useState('')
+  const [importNotice, setImportNotice] = useState('')
   const [issues, setIssues] = useState<ImportIssue[]>([])
-  const [section, setSection] = useState<'library' | 'playlists'>('library')
+  const [notice, setNotice] = useState('')
+  const [section, setSection] = useState<Section>('library')
+  const [playlistRequest, setPlaylistRequest] = useState<{ trackId: string; sequence: number }>()
+  const libraryLink = useRef<HTMLButtonElement>(null)
+  const content = useRef<HTMLElement>(null)
   const trackRead = useRef(0)
   const playback = usePlayback(tracks, trackId => {
     trackRead.current++
     setTracks(previous => previous.map(track => track.id === trackId ? { ...track, available: false } : track))
   })
   useMediaControls(playback)
+
   const [queueOpen, setQueueOpen] = useState(false)
+  const [compactQueue, setCompactQueue] = useState(() => window.matchMedia('(width < 1080px)').matches)
+  const queueButton = useRef<HTMLButtonElement>(null)
+  const closeButton = useRef<HTMLButtonElement>(null)
   const [waveMode, setWaveMode] = useState<WaveMode | null>(null)
   const [savingWaveMode, setSavingWaveMode] = useState(false)
   const [preferences, setPreferences] = useState<TrackPreference[]>([])
-  const [pendingLike, setPendingLike] = useState<string | null>(null)
+  const [pendingLike, setPendingLike] = useState(false)
   const [preferencesReady, setPreferencesReady] = useState(false)
+  const likedTrackIds = useMemo(() => new Set(preferences.filter(item => item.liked).map(item => item.trackId)), [preferences])
+  const anyAvailable = useMemo(() => tracks.some(track => track.available), [tracks])
+
+  useEffect(() => {
+    const query = window.matchMedia('(width < 1080px)')
+    const update = () => setCompactQueue(query.matches)
+    query.addEventListener('change', update)
+    return () => query.removeEventListener('change', update)
+  }, [])
+
+  useLayoutEffect(() => {
+    if (queueOpen) closeButton.current?.focus()
+  }, [queueOpen, compactQueue])
+
+  useEffect(() => {
+    if (!queueOpen) return
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !event.defaultPrevented) {
+        event.preventDefault()
+        closeQueue()
+      }
+    }
+    window.addEventListener('keydown', escape)
+    return () => window.removeEventListener('keydown', escape)
+  }, [queueOpen])
+
+  function closeQueue() {
+    setQueueOpen(false)
+    queueButton.current?.focus()
+  }
+
+  function openSection(next: Section) {
+    if (next !== section) content.current?.scrollTo(0, 0)
+    setSection(next)
+    if (queueOpen && compactQueue) setQueueOpen(false)
+    if (next === 'playlists') void refreshTracks()
+  }
+
   useEffect(() => {
     let active = true
     void window.musicPlayer.getWaveMode().then(mode => {
@@ -46,7 +92,9 @@ export function App() {
   }, [])
 
   async function changeWaveMode(mode: WaveMode): Promise<void> {
+    if (savingWaveMode) return
     setSavingWaveMode(true)
+    setNotice('')
     try {
       await window.musicPlayer.setWaveMode(mode)
       setWaveMode(mode)
@@ -61,17 +109,16 @@ export function App() {
     }).catch(() => { if (active) setNotice('Не удалось загрузить предпочтения. Перезапустите приложение.') })
     return () => { active = false }
   }, [])
-  const likedTrackIds = new Set(preferences.filter(item => item.liked).map(item => item.trackId))
 
   async function toggleLike(trackId: string): Promise<void> {
     if (pendingLike) return
-    setPendingLike(trackId)
+    setPendingLike(true)
+    setNotice('')
     try {
-      const liked = preferences.find(item => item.trackId === trackId)?.liked ?? false
-      const value = await window.musicPlayer.setTrackPreference(trackId, !liked)
+      const value = await window.musicPlayer.setTrackPreference(trackId, !likedTrackIds.has(trackId))
       setPreferences(previous => [...previous.filter(item => item.trackId !== trackId), value])
     } catch { setNotice('Не удалось сохранить лайк.') }
-    finally { setPendingLike(null) }
+    finally { setPendingLike(false) }
   }
 
   useEffect(() => {
@@ -79,16 +126,25 @@ export function App() {
     void window.musicPlayer.getTracks().then(result => {
       if (active) setTracks(result)
     }).catch(() => {
-      if (active) setNotice('Не удалось открыть библиотеку.')
+      if (active) setLibraryLoadFailed(true)
     }).finally(() => { if (active) setLibraryLoading(false) })
     return () => { active = false }
-  }, [])
+  }, [loadAttempt])
+
+  function retryLibrary() {
+    setLibraryLoading(true)
+    setLibraryLoadFailed(false)
+    setLoadAttempt(attempt => attempt + 1)
+  }
 
   async function refreshTracks(): Promise<void> {
     const current = ++trackRead.current
     try {
       const result = await window.musicPlayer.getTracks()
-      if (current === trackRead.current) setTracks(result)
+      if (current === trackRead.current) {
+        setTracks(result)
+        setLibraryLoadFailed(false)
+      }
     } catch {
       if (current === trackRead.current) setNotice('Не удалось проверить доступность треков.')
     }
@@ -101,179 +157,68 @@ export function App() {
       if (result.status === 'cancelled') return
       setIssues(result.status === 'complete' ? result.issues : [])
       if (result.status === 'failed') {
-        setNotice('Не удалось открыть папку.')
+        setImportNotice('Не удалось открыть папку.')
         return
       }
       trackRead.current++
       setTracks(result.tracks)
-      setNotice(result.processed > 0 ? `Файлов обработано: ${result.processed}` : 'В папке нет доступных MP3 и FLAC.')
+      setImportNotice(result.processed > 0 ? 'Файлов обработано: ' + result.processed : 'В папке нет доступных MP3 и FLAC.')
     } catch {
       setIssues([])
-      setNotice('Не удалось импортировать папку.')
+      setImportNotice('Не удалось импортировать папку.')
     } finally {
       setImporting(false)
     }
   }
 
-  return (
-    <div className="shell flex h-dvh flex-col">
-      <header className="topbar flex items-center justify-between gap-4">
-        <div className="brand flex items-center gap-3">
-          <span className="brand-mark" aria-hidden="true">♫</span>
-          <span>Music Player</span>
-        </div>
-        <button className="primary" onClick={() => void importFolder()} disabled={importing || libraryLoading}>
-          <span aria-hidden="true">＋</span> {importing ? 'Импорт…' : 'Выбрать папку'}
-        </button>
-      </header>
-
-      <main className="library min-h-0 flex-1 overflow-auto">
-        <nav className="section-nav" aria-label="Разделы">
-          <button aria-current={section === 'library' ? 'page' : undefined} onClick={() => setSection('library')}>Библиотека</button>
-          <button aria-current={section === 'playlists' ? 'page' : undefined} disabled={libraryLoading || importing}
-            onClick={() => { setSection('playlists'); void refreshTracks() }}>Плейлисты</button>
-        </nav>
-        {(notice || importing) && <p className="notice" role="status">{importing ? 'Читаем папку…' : notice}</p>}
-        {issues.length > 0 && (
-          <details className="issues">
-            <summary>Ошибки импорта ({issues.length})</summary>
-            <ul>
-              {issues.map((issue) => (
-                <li key={issue.entry}>{issue.entry} — {issue.reason === 'directory-unreadable' ? 'папка недоступна' : 'файл не прочитан'}</li>
-              ))}
-            </ul>
-          </details>
-        )}
-        <div hidden={section !== 'library'}>
-          <div className="library-heading flex flex-wrap items-center justify-between gap-3">
-            <h1>Библиотека</h1>
-            <div className="wave-controls">
-              <select aria-label="Режим «Моей волны»" value={waveMode ?? ''} disabled={!waveMode || savingWaveMode}
-                onChange={event => void changeWaveMode(event.currentTarget.value as WaveMode)}>
-                {!waveMode && <option value="">Режим «Волны»</option>}
-                {waveModes.map(mode => <option value={mode} key={mode}>{waveModeLabels[mode]}</option>)}
-              </select>
-              <button className="primary" disabled={tracks.length === 0 || importing || playback.loading || !playback.ready || !waveMode || savingWaveMode}
-                onClick={() => void playback.startWave()}>Моя волна</button>
+  const covered = queueOpen && compactQueue
+  const likeDisabled = !preferencesReady
+  return <div className="shell">
+    <div className="workspace">
+      <nav className="section-nav" aria-label="Разделы">
+        <span className="brand-mark" aria-hidden="true"><Icon name="music" /></span>
+        {sections.map(item => <button key={item.id} ref={item.id === "library" ? libraryLink : undefined} type="button" aria-label={item.label} title={item.label}
+          aria-current={section === item.id ? 'page' : undefined} onClick={() => openSection(item.id)}
+          disabled={item.id === 'playlists' && (libraryLoading || importing)}>
+          <Icon name={item.icon} /><span>{item.label}</span>
+        </button>)}
+      </nav>
+      <div className="content-frame">
+        <main className="content" ref={content} inert={covered}>
+          <div className="section-content">
+            {notice && <p className="notice" role="alert">{notice}</p>}
+            <div hidden={section !== 'library'}>
+              <Library tracks={tracks} loading={libraryLoading} loadFailed={libraryLoadFailed} retryLoad={retryLibrary}
+                importing={importing} notice={importNotice} issues={issues} importFolder={() => void importFolder()}
+                activeId={playback.track?.id} playing={playback.playing} ready={playback.ready}
+                likedIds={likedTrackIds} likeDisabled={likeDisabled} toggleLike={id => void toggleLike(id)}
+                select={playback.select} addToQueue={playback.addToQueue} addToPlaylist={id => {
+                  setPlaylistRequest(request => ({ trackId: id, sequence: (request?.sequence ?? 0) + 1 }))
+                  openSection('playlists')
+                }} />
+            </div>
+            <div hidden={section !== 'wave'}>
+              <Wave mode={waveMode} saving={savingWaveMode} changeMode={mode => void changeWaveMode(mode)}
+                empty={!libraryLoading && !libraryLoadFailed && tracks.length === 0}
+                unavailable={tracks.length > 0 && !anyAvailable} ready={playback.ready && !importing && !libraryLoading && !libraryLoadFailed}
+                active={playback.mode === 'wave'} playing={playback.playing} loading={playback.loading}
+                title={playback.track?.title} notice={playback.waveNotice} start={playback.startWave}
+                openLibrary={() => { openSection('library'); libraryLink.current?.focus() }} />
+            </div>
+            <div hidden={section !== 'playlists'}>
+              <Playlists tracks={tracks} playbackReady={playback.ready && !playback.loading}
+                request={playlistRequest} onPlay={playback.startPlaylist} refreshTracks={refreshTracks} onQueue={playback.addToQueue} />
             </div>
           </div>
-          <p className="track-count muted" role="status">Треков: {shown.length}{query.trim() && ` из ${tracks.length}`}</p>
-          {tracks.length > 0 && (
-            <div className="library-tools">
-              <input type="search" aria-label="Поиск по библиотеке" placeholder="Название, исполнитель или альбом"
-                value={query} onChange={event => setQuery(event.currentTarget.value)} />
-              <label className="sort-control">
-                <span>Сортировка</span>
-                <select value={sortField} onChange={event => setSortField(event.currentTarget.value as SortField | '')}>
-                  <option value="">Порядок импорта</option>
-                  {Object.entries(sortFields).map(([field, label]) => <option key={field} value={field}>{label}</option>)}
-                </select>
-              </label>
-              <button className="sort-direction" disabled={!sortField}
-                aria-label={direction === 'asc' ? 'Сортировать по убыванию' : 'Сортировать по возрастанию'}
-                title={direction === 'asc' ? 'По возрастанию' : 'По убыванию'}
-                onClick={() => setDirection(previous => previous === 'asc' ? 'desc' : 'asc')}>
-                {direction === 'asc' ? '↑' : '↓'}
-              </button>
-            </div>
-          )}
-          {libraryLoading || (importing && tracks.length === 0) ? (
-            libraryLoading && <p className="notice" role="status">Загружаем библиотеку…</p>
-          ) : tracks.length === 0 ? (
-            <div className="empty flex flex-col items-center justify-center text-center">
-              <span className="empty-mark" aria-hidden="true">♫</span>
-              <h2>Здесь появится ваша музыка</h2>
-              <p>Выберите папку с файлами MP3 или FLAC.</p>
-            </div>
-          ) : shown.length === 0 ? (
-            <div className="empty search-empty flex flex-col items-center justify-center text-center">
-              <h2>Треки не найдены</h2>
-              <button className="clear-search" onClick={() => setQuery('')}>Очистить поиск</button>
-            </div>
-          ) : (
-            <table className="tracks">
-              <thead><tr>
-                {Object.entries(sortFields).slice(0, 3).map(([field, label]) => (
-                  <th key={field} aria-sort={sortField === field ? (direction === 'asc' ? 'ascending' : 'descending') : undefined}>{label}</th>
-                ))}
-                <th className="format-column">Формат</th>
-                <th aria-sort={sortField === 'durationSeconds' ? (direction === 'asc' ? 'ascending' : 'descending') : undefined}>Время</th>
-                <th>Лайк</th>
-                <th className="queue-column">Очередь</th>
-              </tr></thead>
-              <tbody>
-                {shown.map((track) => (
-                  <tr key={track.id} data-current={track.id === playback.track?.id}>
-                    <td><button className="track-button" disabled={!playback.ready} onClick={() => playback.select(track.id)}
-                      aria-current={track.id === playback.track?.id ? 'true' : undefined}>
-                      <Artwork key={track.artworkUrl} url={track.artworkUrl} />
-                      <span className="truncate" title={track.title}>{track.title}</span>
-                    </button></td>
-                    <td className="truncate" title={track.artist ?? undefined}>{track.artist ?? '—'}</td>
-                    <td className="truncate" title={track.album ?? undefined}>{track.album ?? '—'}</td>
-                    <td className="format-column"><span className="format">{track.format.toUpperCase()}</span></td>
-                    <td>{formatTime(track.durationSeconds)}</td>
-                    <td><button aria-label={`Лайк: ${track.title}`}
-                      aria-pressed={likedTrackIds.has(track.id)}
-                      disabled={!preferencesReady || pendingLike !== null} onClick={() => void toggleLike(track.id)}>
-                      {likedTrackIds.has(track.id) ? '♥' : '♡'}
-                    </button></td>
-                    <td className="queue-column"><TrackQueueActions title={track.title} disabled={!track.available || !playback.ready}
-                      add={next => { playback.addToQueue(track.id, next); setQueueOpen(true) }} /></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-        <div hidden={section !== 'playlists'}>
-          <Playlists tracks={tracks} playbackReady={playback.ready && !playback.loading}
-            onPlay={playback.startPlaylist} refreshTracks={refreshTracks}
-            onQueue={(id, next) => { playback.addToQueue(id, next); setQueueOpen(true) }} />
-        </div>
-      </main>
-
-      <footer className="player" aria-label="Воспроизведение">
-        <audio {...playback.audioProps} preload="metadata" />
-        {playback.mode === 'wave' && <p className="notice" role="status">
-          {playback.waveNotice || (playback.loading ? 'Подбираем трек для «Моей волны»…' : 'Режим «Моя волна»')}
-        </p>}
-        {playback.mode === 'library' && playback.loading && <p className="notice" role="status">Открываем трек…</p>}
-        {playback.playlistName && <p className="notice truncate" role="status">Плейлист «{playback.playlistName}»</p>}
+        </main>
+        {covered && <div className="queue-scrim" aria-hidden="true" onClick={closeQueue} />}
         {playback.error && <p className="playback-error" role="alert">{playback.error}</p>}
-        <div className="player-main">
-          <div className="now-playing flex min-w-0 items-center gap-3">
-            <Artwork key={playback.track?.artworkUrl} url={playback.track?.artworkUrl ?? null} eager />
-            <div className="min-w-0">
-              <p className="truncate" title={playback.track?.title}>{playback.track?.title ?? 'Трек не выбран'}</p>
-              {playback.track?.artist && <p className="muted truncate" title={playback.track.artist}>{playback.track.artist}</p>}
-            </div>
-          </div>
-          <div className="controls flex items-center justify-center gap-3">
-            <button aria-label="Предыдущий трек" title="Предыдущий трек" disabled={!playback.canGoBack} onClick={() => playback.step(-1)}>Ⅰ◀</button>
-            <button className="play-button" aria-label={playback.playing ? 'Пауза' : 'Воспроизвести'}
-              title={playback.playing ? 'Пауза' : 'Воспроизвести'}
-              disabled={tracks.length === 0 || playback.loading || !playback.ready} onClick={playback.toggle}>{playback.playing ? '❚❚' : '▶'}</button>
-            <button aria-label="Следующий трек" title="Следующий трек" disabled={!playback.canGoNext || !playback.ready} onClick={() => playback.step(1)}>▶Ⅰ</button>
-          </div>
-          <div className="volume flex items-center gap-2">
-            <button className="mute" aria-label="Без звука" aria-pressed={playback.volume?.muted ?? false}
-              title={playback.volume?.muted ? 'Включить звук' : 'Отключить звук'} disabled={!playback.volume}
-              onClick={() => playback.volume && playback.changeVolume({ ...playback.volume, muted: !playback.volume.muted })}>
-              {playback.volume?.muted ? '🔇' : '🔊'}
-            </button>
-            <input aria-label="Громкость" type="range" min={0} max={100} step={1}
-              value={Math.round((playback.volume?.level ?? 1) * 100)} disabled={!playback.volume}
-              onChange={event => playback.volume && playback.changeVolume({
-                ...playback.volume, level: event.currentTarget.valueAsNumber / 100,
-              })} />
-            <span>{Math.round((playback.volume?.level ?? 1) * 100)}%</span>
-          </div>
-          <Timeline audio={playback.audioProps.ref} duration={playback.duration}
-            trackDuration={playback.track?.durationSeconds ?? null} restoredPosition={playback.restoredPosition} seek={playback.seek} />
-        </div>
-        <QueuePanel playback={playback} open={queueOpen} toggle={() => setQueueOpen(open => !open)} />
-      </footer>
+      </div>
+      <QueuePanel playback={playback} open={queueOpen} close={closeQueue} closeButton={closeButton} />
     </div>
-  )
+    <Player playback={playback} hasTracks={tracks.length > 0} liked={!!playback.track && likedTrackIds.has(playback.track.id)}
+      likeDisabled={likeDisabled} toggleLike={() => { if (playback.track) void toggleLike(playback.track.id) }}
+      queueOpen={queueOpen} queueButton={queueButton} toggleQueue={() => queueOpen ? closeQueue() : setQueueOpen(true)} />
+    <p className="sr-only" role="status">Треков в очереди: {playback.queue.pending.length}</p>
+  </div>
 }

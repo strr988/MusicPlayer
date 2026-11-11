@@ -1,19 +1,22 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { playlistNameLimit } from '../../shared/contracts'
 import type { LibraryTrack, Playlist } from '../../shared/contracts'
 import { Artwork } from './artwork'
+import { EmptyState } from './empty-state'
+import { Icon, IconButton } from './icons'
 import { visibleTracks } from './library-view'
 import { TrackQueueActions } from './queue-panel'
 
 interface Props {
   tracks: LibraryTrack[]
   playbackReady: boolean
+  request?: { trackId: string; sequence: number }
   onPlay: (playlist: Playlist) => void
   refreshTracks: () => Promise<void>
   onQueue: (id: string, next: boolean) => void
 }
 
-export function Playlists({ tracks, playbackReady, onPlay, refreshTracks, onQueue }: Props) {
+export function Playlists({ tracks, playbackReady, request, onPlay, refreshTracks, onQueue }: Props) {
   const api = window.musicPlayer
   const [playlists, setPlaylists] = useState<Playlist[] | null>(null)
   const [selectedId, setSelectedId] = useState('')
@@ -21,17 +24,23 @@ export function Playlists({ tracks, playbackReady, onPlay, refreshTracks, onQueu
   const [error, setError] = useState('')
   const [editor, setEditor] = useState<'create' | 'rename' | 'delete' | null>(null)
   const [name, setName] = useState('')
+  const heading = useRef<HTMLHeadingElement>(null)
+  const [loadAttempt, setLoadAttempt] = useState(0)
   const selected = playlists?.find(playlist => playlist.id === selectedId) ?? playlists?.[0]
+
+  useLayoutEffect(() => {
+    if (request) heading.current?.focus()
+  }, [request])
 
   useEffect(() => {
     let active = true
     void api.getPlaylists().then(result => {
       if (active) setPlaylists(result)
     }).catch(() => {
-      if (active) setError('Не удалось загрузить плейлисты. Откройте раздел повторно.')
+      if (active) setError('Не удалось загрузить плейлисты.')
     })
     return () => { active = false }
-  }, [api])
+  }, [api, loadAttempt])
 
   async function mutate(action: () => Promise<void>, message: string): Promise<void> {
     setPending(true)
@@ -67,15 +76,26 @@ export function Playlists({ tracks, playbackReady, onPlay, refreshTracks, onQueu
 
   return (
     <section aria-labelledby="playlist-heading">
-      <div className="library-heading flex flex-wrap items-center justify-between gap-3">
-        <h1 id="playlist-heading">Плейлисты</h1>
-        <button className="primary" disabled={!playlists || pending} onClick={() => { setName(''); setEditor('create') }}>
-          Создать плейлист
-        </button>
-      </div>
+      <header className="section-heading">
+        <div>
+          <h1 id="playlist-heading" tabIndex={-1} ref={heading}>Плейлисты</h1>
+          {playlists && playlists.length > 0 && <p className="muted">Плейлистов: {playlists.length}</p>}
+        </div>
+        {selected && <button className="primary" disabled={pending} onClick={() => { setName(''); setEditor('create') }}>
+          <Icon name="plus" /> Создать плейлист
+        </button>}
+      </header>
       {error && <p className="notice" role="alert">{error}</p>}
-      {!playlists && !error && <p className="notice" role="status">Загружаем плейлисты…</p>}
-      {playlists?.length === 0 && !editor && <p className="notice">Создайте плейлист, чтобы собрать в нём треки из библиотеки.</p>}
+      {!playlists && (error ? <button className="secondary" onClick={() => {
+        setError('')
+        setLoadAttempt(attempt => attempt + 1)
+      }}>Повторить загрузку</button> : <p className="notice" role="status">Загружаем плейлисты…</p>)}
+      {playlists?.length === 0 && !editor && <EmptyState icon="playlists" title="Соберите первый плейлист"
+        action={<button className="primary" disabled={pending} onClick={() => { setName(''); setEditor('create') }}>
+          <Icon name="plus" /> Создать плейлист
+        </button>}>
+        Создайте подборку и добавьте в неё треки из библиотеки.
+      </EmptyState>}
       {selected && (
         <div className="playlist-toolbar">
           <select aria-label="Выбрать плейлист" value={selected.id} disabled={pending}
@@ -93,7 +113,7 @@ export function Playlists({ tracks, playbackReady, onPlay, refreshTracks, onQueu
           event.preventDefault()
           if (!pending && name.trim()) void mutate(saveName, 'Не удалось сохранить название плейлиста.')
         }}>
-          <input key={editor} aria-label="Название плейлиста" placeholder="Название плейлиста" required
+          <input key={editor} autoFocus aria-label="Название плейлиста" placeholder="Название плейлиста" required
             maxLength={playlistNameLimit} value={name} disabled={pending}
             onChange={event => setName(event.currentTarget.value)} />
           <button className="primary" disabled={pending || !name.trim()}>Сохранить</button>
@@ -113,8 +133,8 @@ export function Playlists({ tracks, playbackReady, onPlay, refreshTracks, onQueu
         </div>
       )}
       {selected && (
-        <PlaylistTracks key={selected.id} playlist={selected} tracks={tracks} pending={pending}
-          playbackReady={playbackReady} onPlay={() => onPlay(selected)} onQueue={onQueue}
+        <PlaylistTracks key={selected.id + ":" + (request?.sequence ?? 0)} playlist={selected} tracks={tracks} pending={pending}
+          playbackReady={playbackReady} initialCandidateId={request?.trackId} onPlay={() => onPlay(selected)} onQueue={onQueue}
           onAdd={trackId => void mutate(async () => {
             try { await updateTracks(() => api.addPlaylistTrack(selected.id, trackId)) }
             catch (error) { await refreshTracks(); throw error }
@@ -133,6 +153,7 @@ interface PlaylistTracksProps {
   tracks: LibraryTrack[]
   pending: boolean
   playbackReady: boolean
+  initialCandidateId?: string
   onPlay: () => void
   onQueue: Props['onQueue']
   onAdd: (trackId: string) => void
@@ -140,9 +161,9 @@ interface PlaylistTracksProps {
   onMove: (trackId: string, offset: -1 | 1) => void
 }
 
-function PlaylistTracks({ playlist, tracks, pending, playbackReady, onPlay, onQueue, onAdd, onRemove, onMove }: PlaylistTracksProps) {
+function PlaylistTracks({ playlist, tracks, pending, playbackReady, initialCandidateId, onPlay, onQueue, onAdd, onRemove, onMove }: PlaylistTracksProps) {
   const [query, setQuery] = useState('')
-  const [candidateId, setCandidateId] = useState('')
+  const [candidateId, setCandidateId] = useState(initialCandidateId ?? '')
   const byId = new Map(tracks.map(track => [track.id, track]))
   const members = new Set(playlist.trackIds)
   const canPlay = playlist.trackIds.some(id => byId.get(id)?.available)
@@ -152,7 +173,7 @@ function PlaylistTracks({ playlist, tracks, pending, playbackReady, onPlay, onQu
   return (
     <>
       <div className="playlist-toolbar">
-        <button className="primary" disabled={!canPlay || !playbackReady} onClick={onPlay}>Воспроизвести плейлист</button>
+        <button className="primary" disabled={!canPlay || !playbackReady} onClick={onPlay}><Icon name="play" />Воспроизвести плейлист</button>
       </div>
       <form className="playlist-toolbar playlist-add" onSubmit={event => {
         event.preventDefault()
@@ -179,17 +200,17 @@ function PlaylistTracks({ playlist, tracks, pending, playbackReady, onPlay, onQu
               <Artwork key={track?.artworkUrl} url={track?.artworkUrl ?? null} />
               <div className="min-w-0 flex-1">
                 <p className="truncate" title={title}>{title}</p>
-                {track?.artist && <p className="muted truncate">{track.artist}</p>}
-                {!track?.available && <p className="muted">Файл недоступен</p>}
+                {track?.artist && <p className="muted truncate" title={track.artist}>{track.artist}</p>}
+                {!track?.available && <p className="unavailable">Файл недоступен</p>}
               </div>
               <TrackQueueActions title={title} disabled={!track?.available || !playbackReady}
                 add={next => onQueue(id, next)} />
-              <button className="secondary" aria-label={`Выше: ${title}`} title="Переместить выше"
-                disabled={pending || index === 0} onClick={() => onMove(id, -1)}>↑</button>
-              <button className="secondary" aria-label={`Ниже: ${title}`} title="Переместить ниже"
-                disabled={pending || index === playlist.trackIds.length - 1} onClick={() => onMove(id, 1)}>↓</button>
-              <button className="secondary" aria-label={`Убрать из плейлиста: ${title}`} title="Убрать из плейлиста"
-                disabled={pending} onClick={() => onRemove(id)}>×</button>
+              <IconButton icon="up" label={`Выше: ${title}`} title="Переместить выше"
+                disabled={pending || index === 0} onClick={() => onMove(id, -1)} />
+              <IconButton icon="down" label={`Ниже: ${title}`} title="Переместить ниже"
+                disabled={pending || index === playlist.trackIds.length - 1} onClick={() => onMove(id, 1)} />
+              <IconButton icon="close" label={`Убрать из плейлиста: ${title}`} title="Убрать из плейлиста"
+                disabled={pending} onClick={() => onRemove(id)} />
             </li>
           )
         })}

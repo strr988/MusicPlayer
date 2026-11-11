@@ -1,4 +1,5 @@
 import { useCallback, useState } from 'react'
+import { Icon } from './icons'
 
 const visibilityListeners = new WeakMap<Element, (visible: boolean) => void>()
 const observer = new IntersectionObserver(entries => {
@@ -20,7 +21,7 @@ export function Artwork({ url, eager = false }: { url: string | null; eager?: bo
 
   return (
     <span className="artwork" aria-hidden="true" ref={url && !failed && !eager ? observe : undefined}>
-      <span>♪</span>
+      <Icon name="music" />
       {url && !failed && (eager || visible) && (
         <img src={url} alt="" decoding="async" onError={() => setFailed(true)} />
       )}

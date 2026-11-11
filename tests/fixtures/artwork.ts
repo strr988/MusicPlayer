@@ -7,12 +7,27 @@ function id3Frame(id: string, data: Buffer): Buffer {
 }
 
 export function mp3WithArtwork(audio: Buffer, image: Buffer, mime = 'image/jpeg'): Buffer {
+  return mp3WithMetadata(audio, {
+    title: 'Test Tone MP3',
+    artist: 'Тестовый исполнитель',
+    album: 'Fixture Album',
+  }, { image, mime })
+}
+
+export function mp3WithMetadata(audio: Buffer, metadata: { title: string; artist: string; album: string },
+  artwork?: { image: Buffer; mime: string }): Buffer {
   const originalTagSize = audio.subarray(6, 10).reduce((size, byte) => size * 128 + byte, 0)
-  const artist = id3Frame('TPE1', Buffer.from('\x03Тестовый исполнитель\x00'))
-  const title = id3Frame('TIT2', Buffer.from('\x03Test Tone MP3\x00'))
-  const album = id3Frame('TALB', Buffer.from('\x03Fixture Album\x00'))
-  const cover = id3Frame('APIC', Buffer.concat([Buffer.from(`\x00${mime}\x00\x03\x00`), image]))
-  const tag = Buffer.concat([title, artist, album, cover])
+  const text = (value: string) => Buffer.from('\x03' + value + '\x00')
+  const frames = [
+    id3Frame('TIT2', text(metadata.title)),
+    id3Frame('TPE1', text(metadata.artist)),
+    id3Frame('TALB', text(metadata.album)),
+  ]
+  if (artwork) {
+    const { image, mime } = artwork
+    frames.push(id3Frame('APIC', Buffer.concat([Buffer.from(`\x00${mime}\x00\x03\x00`), image])))
+  }
+  const tag = Buffer.concat(frames)
   return Buffer.concat([audio.subarray(0, 6), syncSafe(tag.length), tag, audio.subarray(10 + originalTagSize)])
 }
 

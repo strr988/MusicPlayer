@@ -208,3 +208,12 @@ test('migrates a 0.2.0 profile and restores the verified pre-migration backup in
   await copyFile(join(profile, 'smoke-state.json'), join(restored, 'smoke-state.json'))
   await verifyExe(previous, root, restored, folder, 'verify-v4', '0.2.0')
 })
+
+const queueArchive = process.env.MUSIC_PLAYER_030_ZIP
+test('restores the playback session written by the original 0.3.0 Windows ZIP', { skip: !queueArchive, timeout: 90_000 }, async (t) => {
+  const { root, folder, profile, app, flac } = await prepareRelease(t)
+  unpack(queueArchive, root)
+  await verifyExe(join(root, 'Music Player 0.3.0'), root, profile, folder, 'queue-import', '0.3.0')
+  await rm(flac)
+  await verifyExe(app, root, profile, folder, 'queue-restart')
+})
