@@ -1,8 +1,19 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { channels } from '../shared/contracts'
 import type { MusicPlayerApi } from '../shared/contracts'
+import { downloadChannels } from '../shared/music-sources'
 
 const api: MusicPlayerApi = {
+  downloads: {
+    list: () => ipcRenderer.invoke(downloadChannels.list),
+    analyze: url => ipcRenderer.invoke(downloadChannels.analyze, url),
+    confirm: (id, edits) => ipcRenderer.invoke(downloadChannels.confirm, id, edits),
+    cancel: id => ipcRenderer.invoke(downloadChannels.cancel, id),
+    addToLibrary: id => ipcRenderer.invoke(downloadChannels.addToLibrary, id),
+    reveal: id => ipcRenderer.invoke(downloadChannels.reveal, id),
+    chooseCover: id => ipcRenderer.invoke(downloadChannels.chooseCover, id),
+    dismiss: id => ipcRenderer.invoke(downloadChannels.dismiss, id),
+  },
   getWaveQueue: () => ipcRenderer.invoke(channels.getWaveQueue),
   getWaveRecommendations: () => ipcRenderer.invoke(channels.getWaveRecommendations),
   getWaveMode: () => ipcRenderer.invoke(channels.getWaveMode),

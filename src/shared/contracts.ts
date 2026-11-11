@@ -1,3 +1,5 @@
+import type { DownloadsApi } from './music-sources'
+
 export const channels = {
   getWaveQueue: 'recommendations:get-wave-queue',
   getWaveRecommendations: 'recommendations:get-wave-recommendations',
@@ -150,6 +152,7 @@ export interface ListeningData { preferences: TrackPreference[]; events: Playbac
 export interface ListeningDataReader { getListeningData(): ListeningData }
 
 export interface MusicPlayerApi {
+  downloads: DownloadsApi
   getWaveQueue(): Promise<string[]>
   getWaveRecommendations(): Promise<WaveRecommendations>
   getWaveMode(): Promise<WaveMode>

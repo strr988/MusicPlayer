@@ -5,7 +5,7 @@ import type { LocalSource } from './library-store'
 import { sameFile } from './local-file'
 
 const probeBytes = 8 * 1024 * 1024
-const maxImageBytes = 2 * 1024 * 1024
+export const maxImageBytes = 2 * 1024 * 1024
 const maxCacheBytes = 16 * 1024 * 1024
 const maxCacheEntries = 256
 const maxSide = 2048
@@ -53,7 +53,7 @@ function isSizedJpeg(bytes: Buffer): boolean {
   return false
 }
 
-function artworkMime(data: Uint8Array): Image['mime'] | null {
+export function artworkMime(data: Uint8Array): Image['mime'] | null {
   if (data.length > maxImageBytes) return null
   const bytes = Buffer.from(data.buffer, data.byteOffset, data.byteLength)
   if (bytes.subarray(0, 8).equals(pngSignature) && isStaticPng(bytes)) return 'image/png'
@@ -91,6 +91,11 @@ export class Artwork {
 
     const { file, source } = opened
     try {
+      const custom = this.library.getDownloadCover(source.trackId)
+      if (custom !== undefined) {
+        const mime = custom && artworkMime(custom)
+        return mime && custom ? { mime, bytes: new Uint8Array(custom) } : null
+      }
       const image = cached === undefined ? await this.extract(file, source) : cached
       this.cache.set(id, image)
       this.cacheBytes += image?.bytes.length ?? 0

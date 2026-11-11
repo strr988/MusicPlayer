@@ -4,6 +4,7 @@ import { playerOrigin, playlistNameLimit } from '../shared/contracts'
 import type { Track, LibraryTrack, ListeningData, ListeningDataReader, PlaybackEventInput, PlaybackSession, Playlist, TrackPreference, VolumePreference, WaveMode } from '../shared/contracts'
 import type { FileIdentity } from './local-file'
 import { validatePlaybackSession } from './playback-session'
+import type { MetadataEdits, SourceMetadata } from '../shared/music-sources'
 
 const migrations = [
   `CREATE TABLE tracks (
@@ -72,6 +73,15 @@ const migrations = [
   `CREATE TABLE playback_session (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     snapshot TEXT NOT NULL
+  ) STRICT;`,
+  `CREATE TABLE external_recordings (
+    provider TEXT NOT NULL,
+    provider_id TEXT NOT NULL,
+    track_id TEXT NOT NULL UNIQUE REFERENCES tracks(id),
+    metadata TEXT NOT NULL,
+    edits TEXT NOT NULL,
+    cover BLOB,
+    PRIMARY KEY (provider, provider_id)
   ) STRICT;`,
 ]
 
@@ -325,33 +335,61 @@ export class LibraryStore implements ListeningDataReader {
     this.db.prepare('UPDATE sources SET available = ? WHERE id = ?').run(Number(available), id)
   }
 
+  getExternalTrackId(provider: string, sourceId: string): string | undefined {
+    const row = this.db.prepare('SELECT track_id FROM external_recordings WHERE provider = ? AND provider_id = ?')
+      .get(provider, sourceId) as { track_id: string } | undefined
+    return row?.track_id
+  }
+
+  getDownloadCover(trackId: string): Uint8Array | null | undefined {
+    const row = this.db.prepare('SELECT cover FROM external_recordings WHERE track_id = ?')
+      .get(trackId) as { cover: Uint8Array | null } | undefined
+    return row?.cover
+  }
+
+  saveDownload(entry: ScanEntry, metadata: SourceMetadata, edits: MetadataEdits, cover: Uint8Array | null): string {
+    return this.transaction(() => {
+      const existing = this.getExternalTrackId(metadata.provider, metadata.sourceId)
+      if (existing) return existing
+      this.writeEntries([entry])
+      this.db.prepare('INSERT INTO external_recordings VALUES (?, ?, ?, ?, ?, ?)')
+        .run(metadata.provider, metadata.sourceId, entry.track.id, JSON.stringify(metadata), JSON.stringify(edits), cover)
+      return entry.track.id
+    })
+  }
+
   saveScan(folder: string, entries: ScanEntry[], availability: ReadonlyMap<string, boolean>): void {
     this.transaction(() => {
       this.db.prepare('INSERT INTO imported_folders (path) VALUES (?) ON CONFLICT DO NOTHING').run(folder)
-      const writeTrack = this.db.prepare(`INSERT INTO tracks (id, title, artist, album, duration_seconds, genres, format)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT (id) DO UPDATE SET title = excluded.title, artist = excluded.artist,
-        album = excluded.album, duration_seconds = excluded.duration_seconds,
-        genres = excluded.genres, format = excluded.format`)
-      const addSource = this.db.prepare(`INSERT INTO sources (id, track_id, provider, provider_id, available)
-        VALUES (?, ?, 'local', ?, 1)`)
-      const updateSource = this.db.prepare('UPDATE sources SET id = ?, provider_id = ?, available = 1 WHERE id = ?')
-      const writeFile = this.db.prepare(`INSERT INTO local_files (source_id, dev, ino, birthtime_ns, size, mtime_ns, ctime_ns)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT (source_id) DO UPDATE SET dev = excluded.dev, ino = excluded.ino,
-        birthtime_ns = excluded.birthtime_ns, size = excluded.size,
-        mtime_ns = excluded.mtime_ns, ctime_ns = excluded.ctime_ns`)
-
-      for (const { track, source, previousSourceId } of entries) {
-        writeTrack.run(track.id, track.title, track.artist, track.album,
-          track.durationSeconds, JSON.stringify(track.genres), track.format)
-        if (previousSourceId) updateSource.run(source.id, source.path, previousSourceId)
-        else addSource.run(source.id, source.trackId, source.path)
-        const { dev, ino, birthtimeNs, size, mtimeNs, ctimeNs } = source.identity
-        writeFile.run(source.id, String(dev), String(ino), String(birthtimeNs), String(size), String(mtimeNs), String(ctimeNs))
-      }
+      this.writeEntries(entries)
       this.writeAvailability(availability)
     })
+  }
+
+  private writeEntries(entries: ScanEntry[]): void {
+    const writeTrack = this.db.prepare(`INSERT INTO tracks (id, title, artist, album, duration_seconds, genres, format)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (id) DO UPDATE SET title = excluded.title, artist = excluded.artist,
+      album = excluded.album, duration_seconds = excluded.duration_seconds,
+      genres = excluded.genres, format = excluded.format
+      WHERE NOT EXISTS (SELECT 1 FROM external_recordings WHERE track_id = excluded.id)`)
+    const addSource = this.db.prepare(`INSERT INTO sources (id, track_id, provider, provider_id, available)
+      VALUES (?, ?, 'local', ?, 1)`)
+    const updateSource = this.db.prepare('UPDATE sources SET id = ?, provider_id = ?, available = 1 WHERE id = ?')
+    const writeFile = this.db.prepare(`INSERT INTO local_files (source_id, dev, ino, birthtime_ns, size, mtime_ns, ctime_ns)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (source_id) DO UPDATE SET dev = excluded.dev, ino = excluded.ino,
+      birthtime_ns = excluded.birthtime_ns, size = excluded.size,
+      mtime_ns = excluded.mtime_ns, ctime_ns = excluded.ctime_ns`)
+
+    for (const { track, source, previousSourceId } of entries) {
+      writeTrack.run(track.id, track.title, track.artist, track.album,
+        track.durationSeconds, JSON.stringify(track.genres), track.format)
+      if (previousSourceId) updateSource.run(source.id, source.path, previousSourceId)
+      else addSource.run(source.id, source.trackId, source.path)
+      const { dev, ino, birthtimeNs, size, mtimeNs, ctimeNs } = source.identity
+      writeFile.run(source.id, String(dev), String(ino), String(birthtimeNs), String(size), String(mtimeNs), String(ctimeNs))
+    }
   }
 
   private writeAvailability(status: ReadonlyMap<string, boolean>): void {

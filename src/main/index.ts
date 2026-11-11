@@ -8,7 +8,10 @@ import { channels, playerOrigin, playlistNameLimit, waveModes } from '../shared/
 import type { ImportResult, WaveMode } from '../shared/contracts'
 import { Library } from './library'
 import { serveMedia } from './media'
-import { Artwork } from './artwork'
+import { Artwork, artworkMime } from './artwork'
+import { DownloadManager } from './music-sources/download-manager'
+import { YtDlpProvider } from './music-sources/archive'
+import { registerDownloadIpc } from './music-sources/ipc'
 import { validatePlaybackEvent, validatePreference } from './feedback-validation'
 import { validatePlaybackSession } from './playback-session'
 import { explainWave, generateWave } from '../recommendations/engine'
@@ -184,6 +187,19 @@ async function start(): Promise<void> {
   }
   const library = new Library(join(userData, 'library.sqlite3'))
   const artwork = new Artwork(library)
+  const downloads = new DownloadManager(userData, new YtDlpProvider(join(userData, 'tools', 'yt-dlp.exe')), library)
+  let quitting = false
+  let downloadsStopped = false
+  app.on('before-quit', event => {
+    if (downloadsStopped) return
+    event.preventDefault()
+    if (quitting) return
+    quitting = true
+    void downloads.stop().finally(() => {
+      downloadsStopped = true
+      app.quit()
+    })
+  })
   app.once('will-quit', () => library.close())
 
   const playerSession = session.fromPartition('music-player')
@@ -215,11 +231,22 @@ async function start(): Promise<void> {
       const id = url.pathname.slice('/artwork/'.length)
       return idPattern.test(id) ? artwork.serve(request, id) : new Response(null, { status: 404 })
     }
+    if (url.pathname.startsWith('/download-artwork/')) {
+      const [, , id, variant, extra] = url.pathname.split('/')
+      const bytes = idPattern.test(id) && !extra && (variant === undefined || variant === 'custom') ?
+        downloads.cover(id, variant === 'custom') : null
+      const mime = bytes && artworkMime(bytes)
+      if (!bytes || !mime) return new Response(null, { status: 404 })
+      return new Response(request.method === 'HEAD' ? null : new Uint8Array(bytes), {
+        headers: { 'Content-Type': mime, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' },
+      })
+    }
     const asset = assets.get(url.pathname)
     return asset ? net.fetch(asset.href, { method: request.method }) : new Response(null, { status: 404 })
   })
 
   registerIpc(library)
+  registerDownloadIpc(downloads, senderWindow)
 
   async function createWindow(): Promise<void> {
     const player = new BrowserWindow({

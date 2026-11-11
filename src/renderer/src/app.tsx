@@ -8,11 +8,13 @@ import { usePlayback } from './playback'
 import { Playlists } from './playlists'
 import { QueuePanel } from './queue-panel'
 import { Wave } from './wave'
+import { Downloads } from './downloads'
 
 const sections = [
   { id: 'library', label: 'Библиотека', icon: 'library' },
   { id: 'wave', label: 'Моя волна', icon: 'wave' },
   { id: 'playlists', label: 'Плейлисты', icon: 'playlists' },
+  { id: 'downloads', label: 'Загрузки', icon: 'download' },
 ] as const
 type Section = typeof sections[number]['id']
 
@@ -211,6 +213,9 @@ export function App() {
             <div hidden={section !== 'playlists'}>
               <Playlists active={section === 'playlists'} tracks={tracks} playbackReady={playback.ready && !playback.loading}
                 request={playlistRequest} onPlay={playback.startPlaylist} refreshTracks={refreshTracks} onQueue={playback.addToQueue} />
+            </div>
+            <div hidden={section !== 'downloads'}>
+              <Downloads active={section === 'downloads'} onImport={refreshTracks} />
             </div>
           </div>
         </main>

@@ -160,6 +160,11 @@ test('unpacked Windows ZIP restores the advanced playback session silently', { t
   await verifyExe(app, root, profile, folder, 'queue-restart')
 })
 
+test('unpacked Windows ZIP opens Downloads and diagnoses a missing yt-dlp', { timeout: 45_000 }, async t => {
+  const { root, folder, profile, app } = await prepareRelease(t)
+  await verifyExe(app, root, profile, folder, 'downloads-offline')
+})
+
 const legacyArchive = process.env.MUSIC_PLAYER_011_ZIP
 test('upgrades a profile created by the original 0.1.1 Windows ZIP', { skip: !legacyArchive, timeout: 90_000 }, async (t) => {
   const { root, folder, profile, app } = await prepareRelease(t)
@@ -175,7 +180,7 @@ test('upgrades a profile created by the original 0.1.1 Windows ZIP', { skip: !le
   }
   const before = snapshot(3)
   await verifyExe(app, root, profile, folder, 'verify-upgrade')
-  const after = snapshot(5)
+  const after = snapshot(6)
   // Playback in the migrated application appends events to the existing history.
   after[5] = after[5].slice(0, before[5].length)
   assert.deepEqual(after, before)
@@ -192,13 +197,13 @@ test('migrates a 0.2.0 profile and restores the verified pre-migration backup in
     using db = new DatabaseSync(file, { readOnly: true })
     assert.equal(db.prepare('PRAGMA user_version').get().user_version, schema)
     assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), [])
-    const tables = db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name <> 'playback_session' ORDER BY name").all()
+    const tables = db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT IN ('playback_session', 'external_recordings') ORDER BY name").all()
     return Object.fromEntries(tables.map(({ name }) => [name, db.prepare(`SELECT * FROM "${name}" ORDER BY rowid`).all()]))
   }
   const database = join(profile, 'library.sqlite3')
   const before = snapshot(database, 4)
   await verifyExe(app, root, profile, folder, 'verify-v4')
-  assert.deepEqual(snapshot(database, 5), before)
+  assert.deepEqual(snapshot(database, 6), before)
   const backups = (await readdir(profile)).filter(name => /^library\.sqlite3\.v4-.+\.backup$/.test(name))
   assert.equal(backups.length, 1)
   assert.deepEqual(snapshot(join(profile, backups[0]), 4), before)
@@ -219,21 +224,21 @@ test('restores the playback session written by the original 0.3.0 Windows ZIP', 
 })
 
 const interfaceArchive = process.env.MUSIC_PLAYER_040_ZIP
-test('opens a 0.4.0 profile and restores its session on SQLite schema 5', { skip: !interfaceArchive, timeout: 90_000 }, async (t) => {
+test('opens a 0.4.0 profile and restores its session on SQLite schema 6', { skip: !interfaceArchive, timeout: 90_000 }, async (t) => {
   const { root, folder, profile, app, flac } = await prepareRelease(t)
   unpack(interfaceArchive, root)
   await verifyExe(join(root, 'Music Player 0.4.0'), root, profile, folder, 'queue-import', '0.4.0')
   const database = join(profile, 'library.sqlite3')
-  function checkSchema() {
+  function checkSchema(version) {
     using db = new DatabaseSync(database, { readOnly: true })
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 5)
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, version)
     assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), [])
     return db.prepare('SELECT * FROM tracks ORDER BY rowid').all()
   }
-  const tracks = checkSchema()
+  const tracks = checkSchema(5)
   await rm(flac)
   await verifyExe(app, root, profile, folder, 'queue-restart')
-  assert.deepEqual(checkSchema(), tracks)
+  assert.deepEqual(checkSchema(6), tracks)
 })
 
 const explainableBaselineArchive = process.env.MUSIC_PLAYER_041_ZIP

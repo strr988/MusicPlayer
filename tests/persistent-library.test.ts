@@ -51,7 +51,7 @@ it('persists tracks, source IDs and canonical folders across reopening and overl
   expect(db.prepare('SELECT COUNT(*) AS count FROM imported_folders').get()).toEqual({ count: 2 })
   expect(db.prepare('SELECT COUNT(*) AS count FROM sources WHERE available = 1').get()).toEqual({ count: 2 })
   expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
-  expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 5 })
+  expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 6 })
 })
 
 it('retains the track when moving a file on the same volume and revokes the old media ID', async () => {

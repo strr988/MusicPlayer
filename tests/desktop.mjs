@@ -38,8 +38,8 @@ async function prepareElectron(t, { withArtwork = false, withCatalog = false } =
 
   const entry = fileURLToPath(new URL('./run-electron-smoke.mjs', import.meta.url))
   const profile = join(directory, 'profile')
-  const run = (phase) => promisify(execFile)(executable, [entry, fixtures, profile, phase], { timeout: 35_000 })
-  return { fixtures, run }
+  const run = (phase, timeout = 35_000) => promisify(execFile)(executable, [entry, fixtures, profile, phase], { timeout })
+  return { fixtures, profile, run }
 }
 
 test('built Electron app imports, plays and restores its library across restarts', { timeout: 75_000 }, async (t) => {
@@ -82,6 +82,20 @@ test('interface preserves playback and keyboard focus at four desktop sizes', { 
   const { run } = await prepareElectron(t, { withCatalog: true })
   await run('interface')
 })
+
+test('Downloads validates links and reports the missing tool in Electron', { timeout: 40_000 }, async t => {
+  const { run } = await prepareElectron(t)
+  await run('downloads-offline')
+})
+
+test('Archive.org downloads and plays an authorized original without FFmpeg, then restores the imported Track ID',
+  { skip: !process.env.MUSIC_PLAYER_YTDLP_EXE, timeout: 140_000 }, async t => {
+    const { profile, run } = await prepareElectron(t)
+    await mkdir(join(profile, 'tools'), { recursive: true })
+    await copyFile(process.env.MUSIC_PLAYER_YTDLP_EXE, join(profile, 'tools', 'yt-dlp.exe'))
+    await run('downloads-live', 100_000)
+    await run('downloads-restart')
+  })
 
 test('offline blind pilot plays local audio and exports only explicitly submitted answers', { timeout: 40_000 }, async t => {
   const { fixtures } = await prepareElectron(t)

@@ -6,8 +6,8 @@ import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, dialog } from 'electron'
 import { verifyInterface } from './interface-smoke.mjs'
 
-async function eventually(check, label) {
-  const deadline = Date.now() + 8_000
+async function eventually(check, label, timeout = 8_000) {
+  const deadline = Date.now() + timeout
   while (Date.now() < deadline) {
     const value = await check()
     if (value) return value
@@ -33,9 +33,9 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     if (!target || target.disabled) throw new Error('Button unavailable: ' + label)
     target.click()
   })()`, true)
-  const waitFor = async (script, label) => {
+  const waitFor = async (script, label, timeout) => {
     try {
-      return await eventually(() => run(script), label)
+      return await eventually(() => run(script), label, timeout)
     } catch (error) {
       const snapshot = await run(`(() => {
         const audio = document.querySelector('audio')
@@ -65,7 +65,8 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
   await waitFor(`${buttons}.some(button => button.getClientRects().length &&
     button.innerText.includes('Выбрать папку') && !button.disabled)`, 'library initialized')
   const modern = !app.isPackaged || !['0.1.1', '0.2.0', '0.3.0'].includes(app.getVersion())
-  const explainable = !app.isPackaged || app.getVersion() === '0.5.0'
+  const hasDownloads = !app.isPackaged || app.getVersion() === '0.6.0'
+  const explainable = hasDownloads || app.getVersion() === '0.5.0'
   const openWave = async () => {
     if (modern) await click('Моя волна')
   }
@@ -107,7 +108,73 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
   ]).sort()
   const expectedApi = phase === 'legacy-import' ? oldApi :
     app.getVersion() === '0.2.0' && app.isPackaged ? playlistApi :
-      playlistApi.concat(['getPlaybackSession', 'setPlaybackSession'], explainable ? ['getWaveRecommendations'] : []).sort()
+      playlistApi.concat(['getPlaybackSession', 'setPlaybackSession'], explainable ? ['getWaveRecommendations'] : [],
+        hasDownloads ? ['downloads'] : []).sort()
+  if (phase.startsWith('downloads-')) {
+    assert.deepEqual(await run('Object.keys(window.musicPlayer.downloads).sort()'),
+      ['addToLibrary', 'analyze', 'cancel', 'chooseCover', 'confirm', 'dismiss', 'list', 'reveal'])
+    await click('Загрузки')
+    await waitFor('document.querySelector(".downloads h1")?.innerText === "Загрузки"', 'Downloads section')
+    const statePath = join(profile, 'downloads-smoke.json')
+    if (phase === 'downloads-restart') {
+      const { id, trackId } = JSON.parse(await readFile(statePath, 'utf8'))
+      const [restored] = await run('window.musicPlayer.downloads.list()')
+      assert.deepEqual({ id: restored.id, trackId: restored.trackId, status: restored.status }, { id, trackId, status: 'completed' })
+      const [track] = await run('window.musicPlayer.getTracks()')
+      assert.deepEqual([track.id, track.title, track.available], [trackId, 'A Tone Poem (edited)', true])
+      return
+    }
+    if (phase === 'downloads-offline') {
+      await setInput('.download-form input', 'https://127.0.0.1/details/demo')
+      await click('Анализировать ссылку')
+      await waitFor('document.querySelector(".downloads [role=alert]")?.textContent.includes("Поддерживаются ссылки")', 'unsupported URL message')
+    }
+    await setInput('.download-form input', 'https://archive.org/details/jamendo-184210')
+    await click('Анализировать ссылку')
+    if (phase === 'downloads-offline') {
+      await waitFor('document.querySelector(".downloads [role=alert]")?.textContent.includes("2026.10.26")', 'missing yt-dlp')
+      return
+    }
+    async function jobStatus(status, timeout = 55_000) {
+      return eventually(async () => {
+        const [job] = await run('window.musicPlayer.downloads.list()')
+        if (job?.status === 'failed') throw new Error(job.error)
+        return job?.status === status && job
+      }, status, timeout)
+    }
+    const ready = await jobStatus('ready')
+    assert.equal(ready.metadata.downloadFormat, 'mp3')
+    assert.equal(ready.metadata.licenseUrl, 'https://creativecommons.org/licenses/by/3.0/')
+    assert.equal(ready.metadata.artist, 'CHASMA')
+    await waitFor('document.querySelector(".download-cover img")?.naturalWidth > 0', 'Archive.org cover')
+    const screenshotPath = process.env.MUSIC_PLAYER_DOWNLOAD_SCREENSHOTS
+    async function screenshot(name) {
+      if (screenshotPath) await writeFile(join(screenshotPath, name), (await webContents.capturePage()).toPNG())
+    }
+    if (screenshotPath) {
+      player.setContentSize(1100, 810)
+      await waitFor('innerHeight >= 800', 'screenshot layout')
+    }
+    await screenshot('0.6.0-download-analysis.png')
+    await setInput('.download-fields input', 'A Tone Poem (edited)')
+    await click('Скачать оригинал MP3')
+    const completed = await jobStatus('completed', 35_000)
+    await waitFor('document.querySelector(".download-row")?.textContent.includes("Добавить в библиотеку")', 'completed job controls')
+    await click('Добавить в библиотеку')
+    await waitFor('document.querySelector(".download-row")?.textContent.includes("В библиотеке")', 'library integration')
+    await run('document.querySelector(".download-provenance").open = true')
+    await screenshot('0.6.0-download-completed.png')
+    const [track] = await run('window.musicPlayer.getTracks()')
+    assert.equal(track.title, 'A Tone Poem (edited)')
+    assert.equal(track.format, 'mp3')
+    await click('Библиотека')
+    await waitFor('document.querySelector(".track-button")?.textContent.includes("A Tone Poem (edited)")', 'imported track row')
+    await click('Без звука')
+    await click('A Tone Poem (edited)')
+    await waitFor('document.querySelector("audio").currentTime > 0.2', 'imported track playback')
+    await writeFile(statePath, JSON.stringify({ id: completed.id, trackId: track.id }))
+    return
+  }
   assert.deepEqual(await run(`({
     process: typeof window.process,
     require: typeof window.require,

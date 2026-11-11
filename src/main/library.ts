@@ -9,6 +9,7 @@ import { LibraryStore } from './library-store'
 import type { LocalSource, ScanEntry } from './library-store'
 import { fileIdentity, moveKey, sameFile, sameIdentity } from './local-file'
 import type { FileIdentity } from './local-file'
+import type { AudioFormat, MetadataEdits, SourceMetadata } from '../shared/music-sources'
 
 interface ScannedFile {
   path: string
@@ -118,6 +119,44 @@ export class Library implements ListeningDataReader {
 
   getTracks(): LibraryTrack[] {
     return this.store.getTracks()
+  }
+
+  getExternalTrackId(metadata: SourceMetadata): string | undefined {
+    return this.store.getExternalTrackId(metadata.provider, metadata.sourceId)
+  }
+
+  getDownloadCover(trackId: string) { return this.store.getDownloadCover(trackId) }
+
+  async validateDownloadedAudio(path: string, format: AudioFormat): Promise<void> {
+    await this.readFile(path, format)
+  }
+
+  importDownload(path: string, metadata: SourceMetadata, edits: MetadataEdits, cover: Uint8Array | null): Promise<string> {
+    const scan = this.pendingScan.then(async () => {
+      const duplicate = this.getExternalTrackId(metadata)
+      if (duplicate) return duplicate
+      if (!metadata.downloadFormat) throw new Error('Неподдерживаемый формат.')
+      const file = await this.readFile(path, metadata.downloadFormat)
+      const existing = this.store.getLocalSources().find(source => source.path === path)
+      const track: Track = {
+        ...file.tags, id: existing?.trackId ?? randomUUID(),
+        title: (edits.title === undefined ? metadata.title : edits.title) ??
+          metadata.sourceId.slice(metadata.sourceId.indexOf('/') + 1),
+        artist: edits.artist === undefined ? metadata.artist : edits.artist,
+        album: edits.album === undefined ? metadata.album : edits.album,
+        durationSeconds: edits.durationSeconds === undefined ? metadata.durationSeconds ?? file.tags.durationSeconds : edits.durationSeconds,
+      }
+      return this.store.saveDownload({
+        track,
+        source: {
+          id: existing && sameIdentity(existing.identity, file.identity) ? existing.id : randomUUID(),
+          trackId: track.id, path, format: track.format, identity: file.identity,
+        },
+        previousSourceId: existing?.id,
+      }, metadata, edits, cover)
+    })
+    this.pendingScan = scan.then(() => undefined, () => undefined)
+    return scan
   }
 
   async getRecommendationCandidates(): Promise<RecommendationCandidate[]> {
