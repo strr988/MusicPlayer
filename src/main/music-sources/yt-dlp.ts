@@ -10,11 +10,14 @@ export function checkVersion(value: string): void {
   if (value.trim() !== ytDlpVersion) throw new Error(`Требуется yt-dlp ${ytDlpVersion}.`)
 }
 
-function processError(stderr: string): Error {
-  if (/404|not found|not available|removed/i.test(stderr)) return new Error('Материал недоступен или удалён.')
-  if (/403|429|login|private|restricted/i.test(stderr)) return new Error('Источник ограничил доступ к записи.')
-  if (/ffmpeg|ffprobe/i.test(stderr)) return new Error('Операции с FFmpeg отключены для этого источника.')
-  if (/connection|timed out|network|proxy|ssl|certificate/i.test(stderr)) {
+export function ytDlpProcessError(stderr: string): Error {
+  const errors = stderr.split(/\r?\n/).filter(line => /^ERROR:/i.test(line.trimStart())).join('\n')
+  if (/^ERROR: (?:Postprocessing:.*(?:ffmpeg|ffprobe)|ff(?:mpeg|probe)\b)/im.test(errors)) {
+    return new Error('Операции с FFmpeg отключены для этого источника.')
+  }
+  if (/404|not found|not available|removed/i.test(errors)) return new Error('Материал недоступен или удалён.')
+  if (/403|429|login|private|restricted/i.test(errors)) return new Error('Источник ограничил доступ к записи.')
+  if (/connection|timed out|network|proxy|ssl|certificate|urlopen|getaddrinfo|name resolution/i.test(errors)) {
     return new Error('Сетевая ошибка при обращении к Archive.org.')
   }
   return new Error('yt-dlp не смог прочитать метаданные записи.')
@@ -62,7 +65,7 @@ function run(executable: string, args: string[], directory: string, signal: Abor
       clearTimeout(timeout)
       signal.removeEventListener('abort', abort)
       if (failure) reject(failure)
-      else if (code !== 0) reject(processError(Buffer.concat(stderr).toString('utf8')))
+      else if (code !== 0) reject(ytDlpProcessError(Buffer.concat(stderr).toString('utf8')))
       else resolve(Buffer.concat(stdout).toString('utf8'))
     })
   })

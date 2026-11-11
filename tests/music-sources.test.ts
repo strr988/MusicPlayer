@@ -10,7 +10,7 @@ import type { MusicSourceProvider } from '../src/main/music-sources/archive'
 import type { MetadataEdits } from '../src/shared/music-sources'
 import { DownloadManager, metadataEdits } from '../src/main/music-sources/download-manager'
 import { publicAddress, validateArchiveEndpoint, withArchiveProxy } from '../src/main/music-sources/network'
-import { checkVersion, verifiedYtDlp, ytDlpVersion } from '../src/main/music-sources/yt-dlp'
+import { checkVersion, verifiedYtDlp, ytDlpProcessError, ytDlpVersion } from '../src/main/music-sources/yt-dlp'
 import { request } from 'node:http'
 import { createHash } from 'node:crypto'
 import { parseFile } from 'music-metadata'
@@ -128,6 +128,13 @@ test('reports a missing executable, rejects other hashes and versions', async ()
   await expect(verifiedYtDlp(binary, dir, signal)).rejects.toThrow('SHA-256')
   expect(() => checkVersion(ytDlpVersion + '\n')).not.toThrow()
   expect(() => checkVersion('2026.11.04.232659')).toThrow(ytDlpVersion)
+})
+
+test('does not confuse the intentionally disabled FFmpeg warning with a yt-dlp failure', () => {
+  const warning = 'WARNING: ffmpeg-location unused-ffmpeg does not exist! Continuing without ffmpeg'
+  expect(ytDlpProcessError(`${warning}\r\nERROR: unable to download webpage: connection reset`).message).toContain('Сетевая ошибка')
+  expect(ytDlpProcessError(`${warning}\r\nERROR: unable to extract playlist data`).message).toContain('метаданные')
+  expect(ytDlpProcessError('ERROR: Postprocessing: ffprobe and ffmpeg not found').message).toContain('FFmpeg')
 })
 
 function provider(overrides: Partial<MusicSourceProvider> = {}): MusicSourceProvider {
