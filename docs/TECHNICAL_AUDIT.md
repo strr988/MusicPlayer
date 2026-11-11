@@ -4,6 +4,8 @@
 
 ## Стек и совместимость
 
+Аудит описывает состояние первой сборки. Текущие правила хранения, миграции и выбора SQLite-драйвера описаны в [документации библиотеки](PERSISTENT_LIBRARY.md).
+
 Сохраняем Electron, React, TypeScript, electron-vite, Tailwind CSS, music-metadata, HTMLAudioElement и Vitest. SQLite запланирован на шаг сохранения библиотеки. Точные версии и транзитивные зависимости зафиксированы в `package.json` и `pnpm-lock.yaml`.
 
 | Компонент | Решение и ограничение |

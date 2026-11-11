@@ -1,5 +1,6 @@
+import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { copyFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -7,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import executable from 'electron'
 
-test('built Electron app imports and plays MP3 and FLAC through its sandboxed bridge', { timeout: 45_000 }, async (t) => {
+test('built Electron app imports, plays and restores its library across restarts', { timeout: 75_000 }, async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'music-player-desktop-'))
   t.after(() => rm(directory, { recursive: true, force: true, maxRetries: 5 }))
   const fixtures = join(directory, 'audio')
@@ -17,10 +18,12 @@ test('built Electron app imports and plays MP3 and FLAC through its sandboxed br
   await writeFile(join(fixtures, 'broken.mp3'), 'broken')
 
   const entry = fileURLToPath(new URL('./electron-smoke.mjs', import.meta.url))
+  const profile = join(directory, 'profile')
+  const run = (phase) => promisify(execFile)(executable, [entry, fixtures, profile, phase], { timeout: 35_000 })
   try {
-    await promisify(execFile)(executable, [entry, fixtures, join(directory, 'profile')], {
-      timeout: 35_000,
-    })
+    await run('import')
+    await run('restart')
+    assert.deepEqual(await readFile(join(fixtures, '01.mp3')), await readFile(new URL('./fixtures/01-tone.mp3', import.meta.url)))
   } catch (error) {
     throw new Error(error.message, { cause: error })
   }

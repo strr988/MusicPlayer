@@ -9,14 +9,19 @@ const mp3 = new URL('./fixtures/01-tone.mp3', import.meta.url)
 const flac = new URL('./fixtures/02-tone.flac', import.meta.url)
 let temp: string
 let folder: string
+let library: Library
 
 beforeEach(async () => {
   temp = await mkdtemp(join(tmpdir(), 'music-player-'))
   folder = join(temp, 'Музыка')
   await mkdir(folder)
+  library = new Library(':memory:')
 })
 
-afterEach(async () => { await rm(temp, { recursive: true, force: true }) })
+afterEach(async () => {
+  library.close()
+  await rm(temp, { recursive: true, force: true })
+})
 
 describe('local library', () => {
   it('imports tagged files recursively, reports corrupt files and preserves stable IDs', async () => {
@@ -26,7 +31,6 @@ describe('local library', () => {
     await copyFile(flac, join(nested, '02 tone.flac'))
     await writeFile(join(folder, 'broken.flac'), 'not audio')
     await writeFile(join(folder, 'ignore.txt'), 'not audio')
-    const library = new Library()
 
     const first = await library.importFolder(folder)
     expect(first.processed).toBe(2)
@@ -51,7 +55,7 @@ describe('local library', () => {
     await copyFile(flac, join(outside, 'private.flac'))
     await symlink(outside, join(folder, 'linked'), process.platform === 'win32' ? 'junction' : 'dir')
 
-    const result = await new Library().importFolder(folder)
+    const result = await library.importFolder(folder)
     expect(result.tracks).toEqual([
       expect.objectContaining({ title: 'Без тегов', artist: null, album: null }),
     ])
@@ -63,7 +67,6 @@ describe('local audio', () => {
   it('streams authorized ranges and rejects unknown, removed and replaced files', async () => {
     const path = join(folder, 'track.mp3')
     await copyFile(mp3, path)
-    const library = new Library()
     const { tracks } = await library.importFolder(folder)
     const source = library.getSourceId(tracks[0].id)!
     const url = `music-player://app/audio/${source}`

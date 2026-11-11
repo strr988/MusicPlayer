@@ -1,4 +1,5 @@
-import { readdir } from 'node:fs/promises'
+import { mkdir, readdir } from 'node:fs/promises'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, dialog, ipcMain, net, protocol, session } from 'electron'
 import type { IpcMainInvokeEvent } from 'electron'
@@ -14,7 +15,6 @@ protocol.registerSchemesAsPrivileged([{
   privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true },
 }])
 
-const library = new Library()
 const developmentEntry = !app.isPackaged && process.env.ELECTRON_RENDERER_URL
 const developmentUrl = developmentEntry ? new URL(developmentEntry) : null
 if (developmentUrl && (developmentUrl.protocol !== 'http:' || developmentUrl.hostname !== '127.0.0.1' ||
@@ -33,7 +33,7 @@ function senderWindow(event: IpcMainInvokeEvent): BrowserWindow {
   return window
 }
 
-async function chooseFolder(owner: BrowserWindow): Promise<ImportResult> {
+async function chooseFolder(owner: BrowserWindow, library: Library): Promise<ImportResult> {
   try {
     const selection = await dialog.showOpenDialog(owner, {
       title: 'Выберите папку с музыкой',
@@ -46,10 +46,10 @@ async function chooseFolder(owner: BrowserWindow): Promise<ImportResult> {
   }
 }
 
-function registerIpc(): void {
+function registerIpc(library: Library): void {
   ipcMain.handle(channels.importFolder, (event) => {
     const owner = senderWindow(event)
-    pendingImport ??= chooseFolder(owner).finally(() => { pendingImport = undefined })
+    pendingImport ??= chooseFolder(owner, library).finally(() => { pendingImport = undefined })
     return pendingImport
   })
   ipcMain.handle(channels.getTracks, (event) => {
@@ -66,6 +66,17 @@ function registerIpc(): void {
 }
 
 async function start(): Promise<void> {
+  const userData = app.getPath('userData')
+  await mkdir(userData, { recursive: true })
+  // The profile has one writer for filesystem scans and playback availability updates.
+  if (!app.requestSingleInstanceLock()) {
+    app.quit()
+    return
+  }
+  const library = new Library(join(userData, 'library.sqlite3'))
+  app.once('will-quit', () => library.close())
+  await library.refreshAvailability()
+
   const playerSession = session.fromPartition('music-player')
   playerSession.setPermissionRequestHandler((_contents, _permission, reply) => reply(false))
   playerSession.setPermissionCheckHandler(() => false)
@@ -95,7 +106,7 @@ async function start(): Promise<void> {
     return asset ? net.fetch(asset.href, { method: request.method }) : new Response(null, { status: 404 })
   })
 
-  registerIpc()
+  registerIpc(library)
 
   async function createWindow(): Promise<void> {
     const player = new BrowserWindow({
@@ -124,6 +135,10 @@ async function start(): Promise<void> {
   }
 
   await createWindow()
+  app.on('second-instance', () => {
+    if (window?.isMinimized()) window.restore()
+    window?.focus()
+  })
   app.on('activate', () => { if (!window) void createWindow().catch(onStartupError) })
 }
 

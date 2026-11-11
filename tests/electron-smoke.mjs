@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict'
 import { mkdirSync } from 'node:fs'
-import { rm } from 'node:fs/promises'
+import { readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, dialog } from 'electron'
 import '../out/main/index.js'
 
-const [folder, profile] = process.argv.slice(2)
+const [folder, profile, phase] = process.argv.slice(2)
 mkdirSync(profile, { recursive: true })
 app.setPath('userData', profile)
 
@@ -45,6 +45,29 @@ async function verify() {
 
   const session = webContents.session
   session.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*'] }, (_request, reply) => reply({ cancel: true }))
+
+  async function waitForAudio(condition, label) {
+    return waitFor(`(() => {
+      const audio = document.querySelector('audio')
+      return (${condition}) && audio.src
+    })()`, label)
+  }
+  const advancing = '!audio.paused && audio.currentTime > 0.2'
+  const stateFile = join(profile, 'smoke-state.json')
+  if (phase === 'restart') {
+    const { tracks, mp3 } = JSON.parse(await readFile(stateFile, 'utf8'))
+    await waitFor('document.querySelectorAll("tbody tr").length === 2', 'restored library UI')
+    assert.deepEqual(await run('window.musicPlayer.getTracks()'), tracks)
+    const flacId = tracks.find(({ format }) => format === 'flac').id
+    assert.equal(await run(`window.musicPlayer.getPlayableSource(${JSON.stringify(flacId)})`), null)
+    await click('Test Tone MP3')
+    await waitForAudio(`${advancing} && audio.src === ${JSON.stringify(mp3)}`, 'restored MP3 playback')
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] })
+    const rescan = await run('window.musicPlayer.importFolder()')
+    assert.deepEqual(rescan, { status: 'complete', tracks, processed: 1, issues: [{ entry: 'broken.mp3', reason: 'file-unreadable' }] })
+    return
+  }
+
   const otherWindow = new BrowserWindow({
     show: false,
     webPreferences: {
@@ -90,13 +113,8 @@ async function verify() {
     arbitraryAsset: (await fetch('/assets/win.ini')).status
   }))()`), { arbitraryPath: null, unknownSource: 404, arbitraryAsset: 404 })
 
-  async function waitForAudio(condition, label) {
-    return waitFor(`(() => {
-      const audio = document.querySelector('audio')
-      return (${condition}) && audio.src
-    })()`, label)
-  }
-  const advancing = '!audio.paused && audio.currentTime > 0.2'
+  const tracks = await run('window.musicPlayer.getTracks()')
+  assert.deepEqual((await run('window.musicPlayer.importFolder()')).tracks, tracks)
   await click('Test Tone MP3')
   const mp3 = await waitForAudio(advancing, 'MP3 playback')
   await waitFor('!!document.querySelector(\'button[aria-label="Пауза"]\')', 'pause button')
@@ -122,9 +140,10 @@ async function verify() {
   assert.equal(await run(`fetch(${JSON.stringify(flac)}).then(response => response.status)`), 404)
   await click('Следующий трек')
   await waitFor('document.querySelector("[role=alert]")?.innerText.includes("Не удалось воспроизвести")', 'missing file error')
+  await writeFile(stateFile, JSON.stringify({ tracks, mp3 }))
 }
 
-void verify().then(() => app.exit(0), (error) => {
+void verify().then(() => app.quit(), (error) => {
   console.error(error)
   app.exit(1)
 })

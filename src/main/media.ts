@@ -1,6 +1,4 @@
-import { open } from 'node:fs/promises'
 import { Readable } from 'node:stream'
-import { sameFile } from './library'
 import type { Library } from './library'
 
 export function parseRange(header: string, size: number): { start: number; end: number } | null {
@@ -19,17 +17,14 @@ export function parseRange(header: string, size: number): { start: number; end: 
 }
 
 export async function serveMedia(request: Request, library: Library, id: string): Promise<Response> {
-  const source = await library.getAvailableSource(id)
-  if (!source) return new Response(null, { status: 404 })
-
-  // Open read-only and validate the opened file before exposing any bytes.
   try {
-    const file = await open(source.path, 'r')
+    const opened = await library.openAvailableSource(id)
+    if (!opened) return new Response(null, { status: 404 })
+    const { source, file } = opened
     let streaming = false
     try {
-      const actual = await file.stat({ bigint: true })
-      const size = Number(actual.size)
-      if (!sameFile(source.identity, actual) || !Number.isSafeInteger(size) || size <= 0) {
+      const size = Number(source.identity.size)
+      if (!Number.isSafeInteger(size) || size <= 0) {
         return new Response(null, { status: 404 })
       }
 

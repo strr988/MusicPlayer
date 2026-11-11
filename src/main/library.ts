@@ -1,58 +1,119 @@
 import { randomUUID } from 'node:crypto'
-import type { BigIntStats } from 'node:fs'
-import { lstat, readdir, realpath } from 'node:fs/promises'
+import { lstat, open, readdir, realpath } from 'node:fs/promises'
+import type { FileHandle } from 'node:fs/promises'
 import { basename, extname, isAbsolute, join, relative, sep } from 'node:path'
 import { parseFile } from 'music-metadata'
 import type { ImportIssue, ImportResult, Track } from '../shared/contracts'
+import { LibraryStore } from './library-store'
+import type { LocalSource, ScanEntry } from './library-store'
+import { fileIdentity, moveKey, sameFile, sameIdentity } from './local-file'
+import type { FileIdentity } from './local-file'
 
-interface LocalSource {
-  id: string
-  trackId: string
+interface ScannedFile {
   path: string
-  format: Track['format']
-  identity: BigIntStats
+  tags: Omit<Track, 'id'>
+  identity: FileIdentity
 }
 
-export function sameFile(before: BigIntStats, after: BigIntStats): boolean {
-  return after.isFile() && before.dev === after.dev && before.ino === after.ino &&
-    before.size === after.size && before.mtimeNs === after.mtimeNs && before.ctimeNs === after.ctimeNs
-}
+type CompletedImport = Extract<ImportResult, { status: 'complete' }>
 
 function isWithin(root: string, file: string): boolean {
   const name = relative(root, file)
   return name !== '' && name !== '..' && !name.startsWith(`..${sep}`) && !isAbsolute(name)
 }
 
+async function openVerifiedFile(source: LocalSource): Promise<FileHandle | undefined> {
+  let file: FileHandle | undefined
+  try {
+    if (await realpath(source.path) !== source.path ||
+        !sameFile(source.identity, await lstat(source.path, { bigint: true }))) return undefined
+    file = await open(source.path, 'r')
+    if (sameFile(source.identity, await file.stat({ bigint: true }))) return file
+  } catch {
+    // Missing, unreadable or replaced since import.
+  }
+  await file?.close()
+}
+
+async function isAvailable(source: LocalSource): Promise<boolean> {
+  const file = await openVerifiedFile(source)
+  await file?.close()
+  return file !== undefined
+}
+
+async function previousPathMoved(from: string, to: string): Promise<boolean> {
+  try {
+    // Windows can still resolve the old spelling after a case-only rename.
+    return await realpath(from) === to
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT'
+  }
+}
+
 export class Library {
-  private readonly tracks = new Map<string, Track>()
-  private readonly sources = new Map<string, LocalSource>()
-  private readonly sourceIdsByPath = new Map<string, string>()
-  private readonly sourceIdsByTrack = new Map<string, string>()
+  private readonly store: LibraryStore
+  private pendingScan = Promise.resolve()
+
+  constructor(databasePath: string) {
+    this.store = new LibraryStore(databasePath)
+  }
+
+  close(): void {
+    this.store.close()
+  }
 
   getTracks(): Track[] {
-    return [...this.tracks.values()]
+    return this.store.getTracks()
+  }
+
+  async refreshAvailability(): Promise<void> {
+    const status = new Map<string, boolean>()
+    for (const source of this.store.getLocalSources()) {
+      const available = await isAvailable(source)
+      if (source.available !== available) status.set(source.id, available)
+    }
+    if (status.size > 0) this.store.setAvailability(status)
   }
 
   async getAvailableSource(id: string): Promise<LocalSource | undefined> {
-    const source = this.sources.get(id)
+    const opened = await this.openAvailableSource(id)
+    await opened?.file.close()
+    return opened?.source
+  }
+
+  async openAvailableSource(id: string): Promise<{ source: LocalSource; file: FileHandle } | undefined> {
+    const source = this.store.getLocalSource(id)
     if (!source) return undefined
+    const file = await openVerifiedFile(source)
     try {
-      if (await realpath(source.path) === source.path &&
-          sameFile(source.identity, await lstat(source.path, { bigint: true })) &&
-          this.sources.get(id) === source) return source
-    } catch {
-      return undefined
+      const current = this.store.getLocalSource(id)
+      if (current) {
+        const available = file !== undefined
+        if (current.available !== available) this.store.setSourceAvailability(id, available)
+        if (file) return { source: { ...current, available: true }, file }
+      }
+    } catch (error) {
+      await file?.close()
+      throw error
     }
+    await file?.close()
   }
 
   getSourceId(trackId: string): string | undefined {
-    return this.sourceIdsByTrack.get(trackId)
+    return this.store.getSourceId(trackId)
   }
 
-  async importFolder(folder: string): Promise<Extract<ImportResult, { status: 'complete' }>> {
+  importFolder(folder: string): Promise<CompletedImport> {
+    const scan = this.pendingScan.then(() => this.scanFolder(folder))
+    this.pendingScan = scan.then(() => undefined, () => undefined)
+    return scan
+  }
+
+  private async scanFolder(folder: string): Promise<CompletedImport> {
     const root = await realpath(folder)
+    if (!(await lstat(root)).isDirectory()) throw new Error('Expected an import folder')
     const issues: ImportIssue[] = []
-    let processed = 0
+    const files: ScannedFile[] = []
 
     const scan = async (directory: string): Promise<void> => {
       let entries
@@ -77,8 +138,7 @@ export class Library {
         try {
           const canonical = await realpath(path)
           if (canonical !== path || !isWithin(root, canonical)) throw new Error('File moved')
-          await this.importFile(canonical, extension === '.mp3' ? 'mp3' : 'flac')
-          processed++
+          files.push(await this.readFile(canonical, extension === '.mp3' ? 'mp3' : 'flac'))
         } catch {
           issues.push({ entry: relative(root, path), reason: 'file-unreadable' })
         }
@@ -86,10 +146,59 @@ export class Library {
     }
 
     await scan(root)
-    return { status: 'complete', tracks: this.getTracks(), processed, issues }
+    await this.saveScan(root, files)
+    return { status: 'complete', tracks: this.getTracks(), processed: files.length, issues }
   }
 
-  private async importFile(path: string, format: Track['format']): Promise<void> {
+  private async saveScan(root: string, files: ScannedFile[]): Promise<void> {
+    const previous = this.store.getLocalSources()
+    const byPath = new Map(previous.map((source) => [source.path, source]))
+    const byMoveKey = new Map<string, LocalSource | null>()
+    for (const source of previous) {
+      const key = moveKey(source.identity)
+      if (key) byMoveKey.set(key, byMoveKey.has(key) ? null : source)
+    }
+    const fileCounts = new Map<string, number>()
+    for (const file of files) {
+      const key = moveKey(file.identity)
+      if (key) fileCounts.set(key, (fileCounts.get(key) ?? 0) + 1)
+    }
+
+    const scannedPaths = new Set(files.map((file) => file.path))
+    const refreshedSources = new Set<string>()
+    const entries: ScanEntry[] = []
+    for (const file of files) {
+      let existing = byPath.get(file.path)
+      if (!existing) {
+        const key = moveKey(file.identity)
+        const candidate = key && fileCounts.get(key) === 1 && byMoveKey.get(key)
+        if (candidate && !scannedPaths.has(candidate.path) && await previousPathMoved(candidate.path, file.path)) {
+          existing = candidate
+        }
+      }
+      if (existing) refreshedSources.add(existing.id)
+      const track = { id: existing?.trackId ?? randomUUID(), ...file.tags }
+      const source = {
+        // Revoke the old media URL when the bytes, timestamps or path change.
+        id: existing?.path === file.path && sameIdentity(existing.identity, file.identity) ? existing.id : randomUUID(),
+        trackId: track.id,
+        path: file.path,
+        format: track.format,
+        identity: file.identity,
+      }
+      entries.push({ track, source, previousSourceId: existing?.id })
+    }
+
+    const availability = new Map<string, boolean>()
+    for (const source of previous) {
+      if (isWithin(root, source.path) && !refreshedSources.has(source.id)) {
+        availability.set(source.id, await isAvailable(source))
+      }
+    }
+    this.store.saveScan(root, entries, availability)
+  }
+
+  private async readFile(path: string, format: Track['format']): Promise<ScannedFile> {
     const identity = await lstat(path, { bigint: true })
     if (!identity.isFile() || identity.size === 0n) throw new Error('Invalid file')
 
@@ -106,26 +215,19 @@ export class Library {
       throw new Error('File changed during import')
     }
 
-    const previousId = this.sourceIdsByPath.get(path)
-    const previous = previousId && this.sources.get(previousId)
-    const trackId = previous ? previous.trackId : randomUUID()
-    const sourceId = previous && sameFile(previous.identity, identity) ? previous.id : randomUUID()
     const { title, artist, album, genre } = tags.common
     const { duration } = tags.format
-
-    this.tracks.set(trackId, {
-      id: trackId,
-      title: title?.trim() || basename(path, extname(path)),
-      artist: artist?.trim() || null,
-      album: album?.trim() || null,
-      genres: genre ?? [],
-      durationSeconds: duration !== undefined && Number.isFinite(duration) && duration > 0 ? duration : null,
-      format,
-    })
-    // A replaced file needs a fresh media URL so Chromium drops its previous buffer.
-    if (previous && previous.id !== sourceId) this.sources.delete(previous.id)
-    this.sources.set(sourceId, { id: sourceId, trackId, path, format, identity })
-    this.sourceIdsByPath.set(path, sourceId)
-    this.sourceIdsByTrack.set(trackId, sourceId)
+    return {
+      path,
+      identity: fileIdentity(identity),
+      tags: {
+        title: title?.trim() || basename(path, extname(path)),
+        artist: artist?.trim() || null,
+        album: album?.trim() || null,
+        genres: genre ?? [],
+        durationSeconds: duration !== undefined && Number.isFinite(duration) && duration > 0 ? duration : null,
+        format,
+      },
+    }
   }
 }
