@@ -72,7 +72,11 @@ export function App() {
       <main className="library min-h-0 flex-1 overflow-auto">
         <div className="library-heading flex items-baseline justify-between gap-4">
           <h1>Библиотека</h1>
-          <span className="muted">Треков: {tracks.length}</span>
+          <div className="flex items-center gap-4">
+            <span className="muted">Треков: {tracks.length}</span>
+            <button className="primary" disabled={tracks.length === 0 || importing || playback.loading}
+              onClick={() => void playback.startWave()}>Моя волна</button>
+          </div>
         </div>
         {(notice || importing) && <p className="notice" role="status">{importing ? 'Читаем папку…' : notice}</p>}
         {issues.length > 0 && (
@@ -109,7 +113,7 @@ export function App() {
                   <td><button aria-label={`Лайк: ${track.title}`}
                     aria-pressed={likedTrackIds.has(track.id)}
                     disabled={!preferencesReady || pendingLike !== null} onClick={() => void toggleLike(track.id)}>
-                    {preferences.some(item => item.trackId === track.id && item.liked) ? '♥' : '♡'}
+                    {likedTrackIds.has(track.id) ? '♥' : '♡'}
                   </button></td>
                 </tr>
               ))}
@@ -120,6 +124,9 @@ export function App() {
 
       <footer className="player" aria-label="Воспроизведение">
         <audio {...playback.audioProps} preload="metadata" />
+        {playback.mode === 'wave' && <p className="notice" role="status">
+          {playback.waveNotice || (playback.loading ? 'Подбираем трек для «Моей волны»…' : 'Режим «Моя волна»')}
+        </p>}
         {playback.error && <p className="playback-error" role="alert">{playback.error}</p>}
         <div className="player-main">
           <div className="now-playing flex min-w-0 items-center gap-3">
@@ -130,11 +137,11 @@ export function App() {
             </div>
           </div>
           <div className="controls flex items-center justify-center gap-3">
-            <button aria-label="Предыдущий трек" title="Предыдущий трек" disabled={playback.index <= 0} onClick={() => playback.step(-1)}>Ⅰ◀</button>
+            <button aria-label="Предыдущий трек" title="Предыдущий трек" disabled={!playback.canGoBack} onClick={() => playback.step(-1)}>Ⅰ◀</button>
             <button className="play-button" aria-label={playback.playing ? 'Пауза' : 'Воспроизвести'}
               title={playback.playing ? 'Пауза' : 'Воспроизвести'}
               disabled={tracks.length === 0 || playback.loading} onClick={playback.toggle}>{playback.playing ? '❚❚' : '▶'}</button>
-            <button aria-label="Следующий трек" title="Следующий трек" disabled={playback.index >= tracks.length - 1} onClick={() => playback.step(1)}>▶Ⅰ</button>
+            <button aria-label="Следующий трек" title="Следующий трек" disabled={!playback.canGoNext} onClick={() => playback.step(1)}>▶Ⅰ</button>
           </div>
           <div className="timeline flex items-center gap-2">
             <span>{formatTime(playback.position)}</span>

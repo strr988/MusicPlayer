@@ -41,7 +41,7 @@ async function verify() {
     process: typeof window.process,
     require: typeof window.require,
     api: Object.keys(window.musicPlayer).sort()
-  })`), { process: 'undefined', require: 'undefined', api: ['getListeningData', 'getPlayableSource', 'getTracks', 'importFolder', 'recordPlaybackEvent', 'setTrackPreference'] })
+  })`), { process: 'undefined', require: 'undefined', api: ['getListeningData', 'getPlayableSource', 'getTracks', 'getWaveQueue', 'importFolder', 'recordPlaybackEvent', 'setTrackPreference'] })
 
   const session = webContents.session
   session.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*'] }, (_request, reply) => reply({ cancel: true }))
@@ -54,6 +54,58 @@ async function verify() {
   }
   const advancing = '!audio.paused && audio.currentTime > 0.2'
   const stateFile = join(profile, 'smoke-state.json')
+  if (phase === 'wave-import') {
+    assert.equal(await run(`${buttons}.find(button => button.innerText === 'Моя волна').disabled`), true)
+    assert.deepEqual(await run('window.musicPlayer.getWaveQueue()'), [])
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] })
+    await click('Выбрать папку')
+    await waitFor('document.querySelectorAll("tbody tr").length === 2', 'imported wave catalog')
+    const tracks = await run('window.musicPlayer.getTracks()')
+    const mp3Id = tracks.find(track => track.format === 'mp3').id
+    const flacId = tracks.find(track => track.format === 'flac').id
+    const queue = await run('window.musicPlayer.getWaveQueue()')
+    assert.deepEqual(new Set(queue), new Set([mp3Id, flacId]))
+    await click('Лайк: Test Tone FLAC')
+    await waitFor('(async () => (await window.musicPlayer.getListeningData()).preferences.some(p => p.liked))()', 'wave preference saved')
+    assert.deepEqual(await run('window.musicPlayer.getWaveQueue()'), [flacId, mp3Id])
+
+    await click('Моя волна')
+    const flac = await waitForAudio(`${advancing} && audio.duration === 5`, 'liked FLAC played by wave')
+    await waitFor('document.querySelector("footer [role=status]").innerText.includes("Режим")', 'wave mode')
+    assert.equal(await run('document.querySelectorAll("audio").length'), 1)
+    await click('Пауза')
+    await waitForAudio('audio.paused', 'pause in wave')
+    const paused = await run('window.musicPlayer.getListeningData()')
+    assert.deepEqual(paused.events.map(event => event.type), ['started'])
+    await click('Лайк: Test Tone MP3')
+    await waitFor(`(async () => (await window.musicPlayer.getListeningData()).preferences
+      .some(p => p.trackId === ${JSON.stringify(mp3Id)} && p.liked))()`, 'new like saved in wave mode')
+    await click('Следующий трек')
+    const mp3 = await waitForAudio(`${advancing} && audio.src !== ${JSON.stringify(flac)}`, 'next wave track after skip')
+    const skipped = await run('window.musicPlayer.getListeningData()')
+    assert.ok(skipped.events.some(event => event.type === 'skipped' && event.trackId === flacId))
+    await waitForAudio(`${advancing} && audio.src === ${JSON.stringify(flac)}`, 'automatic wave transition after completion')
+    const feedback = await run('window.musicPlayer.getListeningData()')
+    assert.ok(feedback.events.some(event => event.type === 'completed' && event.trackId === mp3Id))
+    await writeFile(stateFile, JSON.stringify({ mp3Id, mp3, feedback }))
+    return
+  }
+  if (phase === 'wave-restart') {
+    const { mp3Id, mp3, feedback } = JSON.parse(await readFile(stateFile, 'utf8'))
+    await waitFor('document.querySelectorAll("tbody tr").length === 2', 'restored wave catalog')
+    assert.deepEqual(await run('window.musicPlayer.getListeningData()'), feedback)
+    assert.deepEqual(await run('window.musicPlayer.getWaveQueue()'), [mp3Id])
+    await click('Моя волна')
+    await waitForAudio(`${advancing} && audio.src === ${JSON.stringify(mp3)}`, 'only available track plays after restart')
+    await waitFor('document.querySelector("footer [role=status]").innerText.includes("других доступных")', 'singleton wave stops after playback')
+    await rm(join(folder, '01.mp3'))
+    await click('Моя волна')
+    await waitFor('document.querySelector("footer [role=status]").innerText.includes("нет доступных")', 'wave handles missing files')
+    assert.deepEqual(await run('window.musicPlayer.getWaveQueue()'), [])
+    await click('Test Tone MP3')
+    await waitFor('!document.querySelector("footer [role=status]")', 'manual selection returns to library mode')
+    return
+  }
   if (phase === 'restart') {
     const { tracks, mp3, feedback } = JSON.parse(await readFile(stateFile, 'utf8'))
     await waitFor('document.querySelectorAll("tbody tr").length === 2', 'restored library UI')
@@ -82,15 +134,11 @@ async function verify() {
   })
   try {
     await otherWindow.loadURL(webContents.getURL())
-    const refusal = await otherWindow.webContents.executeJavaScript(`(async () => {
-      try {
-        await window.musicPlayer.getTracks()
-        return 'unexpectedly accepted'
-      } catch (error) {
-        return error.message
-      }
-    })()`)
-    assert.match(refusal, /IPC sender denied/)
+    const refusals = await otherWindow.webContents.executeJavaScript(`Promise.all(
+      [window.musicPlayer.getTracks(), window.musicPlayer.getWaveQueue()]
+        .map(result => result.then(() => 'unexpectedly accepted', error => error.message))
+    )`)
+    for (const refusal of refusals) assert.match(refusal, /IPC sender denied/)
   } finally {
     otherWindow.destroy()
   }

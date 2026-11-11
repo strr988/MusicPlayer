@@ -1,3 +1,4 @@
+import { randomInt } from 'node:crypto'
 import { mkdir, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -8,6 +9,7 @@ import type { ImportResult } from '../shared/contracts'
 import { Library } from './library'
 import { serveMedia } from './media'
 import { validatePlaybackEvent, validatePreference } from './feedback-validation'
+import { generateWave } from '../recommendations/engine'
 
 const scheme = 'music-player'
 const trackIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
@@ -48,6 +50,12 @@ async function chooseFolder(owner: BrowserWindow, library: Library): Promise<Imp
 }
 
 function registerIpc(library: Library): void {
+  ipcMain.handle(channels.getWaveQueue, async (event, ...args: unknown[]) => {
+    senderWindow(event)
+    if (args.length !== 0) throw new Error('Unexpected wave arguments')
+    const candidates = await library.getRecommendationCandidates()
+    return generateWave({ candidates, listening: library.getListeningData(), now: Date.now(), seed: randomInt(2 ** 32) }, 10)
+  })
   ipcMain.handle(channels.getListeningData, (event) => {
     senderWindow(event)
     return library.getListeningData()

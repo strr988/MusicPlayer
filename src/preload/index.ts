@@ -3,6 +3,7 @@ import { channels } from '../shared/contracts'
 import type { MusicPlayerApi } from '../shared/contracts'
 
 const api: MusicPlayerApi = {
+  getWaveQueue: () => ipcRenderer.invoke(channels.getWaveQueue),
   getListeningData: () => ipcRenderer.invoke(channels.getListeningData),
   setTrackPreference: (trackId, liked) => ipcRenderer.invoke(channels.setTrackPreference, trackId, liked),
   recordPlaybackEvent: (event) => ipcRenderer.invoke(channels.recordPlaybackEvent, event),

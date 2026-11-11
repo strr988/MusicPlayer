@@ -1,4 +1,5 @@
 export const channels = {
+  getWaveQueue: 'recommendations:get-wave-queue',
   getListeningData: 'feedback:get-data',
   setTrackPreference: 'feedback:set-preference',
   recordPlaybackEvent: 'feedback:record-event',
@@ -50,6 +51,7 @@ export interface ListeningData { preferences: TrackPreference[]; events: Playbac
 export interface ListeningDataReader { getListeningData(): ListeningData }
 
 export interface MusicPlayerApi {
+  getWaveQueue(): Promise<string[]>
   getListeningData(): Promise<ListeningData>
   setTrackPreference(trackId: string, liked: boolean): Promise<TrackPreference>
   recordPlaybackEvent(event: PlaybackEventInput): Promise<void>

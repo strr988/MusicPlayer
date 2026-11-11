@@ -3,7 +3,8 @@ import { lstat, open, readdir, realpath } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import { basename, extname, isAbsolute, join, relative, sep } from 'node:path'
 import { parseFile } from 'music-metadata'
-import type { ImportIssue, ImportResult, Track, PlaybackEventInput } from '../shared/contracts'
+import type { ImportIssue, ImportResult, Track, ListeningDataReader, PlaybackEventInput } from '../shared/contracts'
+import type { RecommendationCandidate } from '../recommendations/engine'
 import { LibraryStore } from './library-store'
 import type { LocalSource, ScanEntry } from './library-store'
 import { fileIdentity, moveKey, sameFile, sameIdentity } from './local-file'
@@ -50,7 +51,7 @@ async function previousPathMoved(from: string, to: string): Promise<boolean> {
   }
 }
 
-export class Library {
+export class Library implements ListeningDataReader {
   private readonly store: LibraryStore
   private pendingScan = Promise.resolve()
 
@@ -68,6 +69,12 @@ export class Library {
 
   getTracks(): Track[] {
     return this.store.getTracks()
+  }
+
+  async getRecommendationCandidates(): Promise<RecommendationCandidate[]> {
+    await this.refreshAvailability()
+    const available = new Set(this.store.getLocalSources().filter(source => source.available).map(source => source.trackId))
+    return this.getTracks().map(({ id, artist, genres }) => ({ id, artist, genres, available: available.has(id) }))
   }
 
   async refreshAvailability(): Promise<void> {

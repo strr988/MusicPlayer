@@ -19,6 +19,8 @@ export function usePlayback(tracks: Track[]) {
       .catch(() => setFeedbackError('Не удалось сохранить историю воспроизведения.'))
   }
   const [trackId, setTrackId] = useState<string | null>(null)
+  const [mode, setMode] = useState<'library' | 'wave'>('library')
+  const [waveNotice, setWaveNotice] = useState('')
   const [playing, setPlaying] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -35,23 +37,24 @@ export function usePlayback(tracks: Track[]) {
     }
   }
 
-  async function select(id: string): Promise<void> {
-    const element = audio.current
-    if (!element) return
+  function resetAudio(element: HTMLAudioElement): number {
     const current = ++request.current
     setError('')
     session.current?.finish('manual', element.duration)
-    session.current = new ListeningSession(id, crypto.randomUUID(), record)
-
+    session.current = null
     element.pause()
     element.removeAttribute('src')
     element.load()
     setPlaying(false)
-    setTrackId(id)
     setPosition(0)
     setDuration(null)
     setLoading(true)
+    return current
+  }
 
+  async function loadTrack(element: HTMLAudioElement, id: string, current: number): Promise<void> {
+    setTrackId(id)
+    session.current = new ListeningSession(id, crypto.randomUUID(), record)
     try {
       const source = await window.musicPlayer.getPlayableSource(id)
       if (current !== request.current) return
@@ -68,6 +71,41 @@ export function usePlayback(tracks: Track[]) {
     }
   }
 
+  function select(id: string): void {
+    const element = audio.current
+    if (element) void loadTrack(element, id, resetAudio(element))
+  }
+
+  async function advanceWave(avoidCurrent: boolean): Promise<void> {
+    const element = audio.current
+    if (!element || loading) return
+    setMode('wave')
+    setWaveNotice('')
+    const current = resetAudio(element)
+    try {
+      // Finishing the old session enqueues its terminal event before taking a new snapshot.
+      await writes.current
+      if (current !== request.current) return
+      const queue = await window.musicPlayer.getWaveQueue()
+      if (current !== request.current) return
+      const next = queue.find(id => !avoidCurrent || id !== trackId)
+      if (next) {
+        await loadTrack(element, next, current)
+      } else {
+        setTrackId(null)
+        setWaveNotice(queue.length > 0 ? 'В «Моей волне» больше нет других доступных треков.' :
+          'Для «Моей волны» нет доступных треков. Проверьте папки с музыкой.')
+      }
+    } catch {
+      if (current === request.current) {
+        setTrackId(null)
+        setError('Не удалось сформировать очередь «Моей волны».')
+      }
+    } finally {
+      if (current === request.current) setLoading(false)
+    }
+  }
+
   function toggle(): void {
     const element = audio.current
     if (!element || loading) return
@@ -77,6 +115,8 @@ export function usePlayback(tracks: Track[]) {
     } else if (element.hasAttribute('src') && !element.error && !element.ended) {
       setError('')
       void play(element, ++request.current)
+    } else if (mode === 'wave') {
+      void advanceWave(false)
     } else {
       const id = track?.id ?? tracks[0]?.id
       if (id) void select(id)
@@ -84,6 +124,10 @@ export function usePlayback(tracks: Track[]) {
   }
 
   function step(offset: -1 | 1): void {
+    if (mode === 'wave') {
+      if (offset === 1) void advanceWave(true)
+      return
+    }
     const target = tracks[index + offset]
     if (target) void select(target.id)
   }
@@ -95,8 +139,16 @@ export function usePlayback(tracks: Track[]) {
   }
 
   return {
-    track, index, playing, loading, error: error || feedbackError, position, duration,
-    select, toggle, step,
+    track, mode, playing, loading, error: error || feedbackError, waveNotice, position, duration,
+    canGoBack: mode === 'library' && index > 0,
+    canGoNext: mode === 'wave' ? trackId !== null && !loading : index < tracks.length - 1,
+    select: (id: string) => {
+      setMode('library')
+      setWaveNotice('')
+      select(id)
+    },
+    startWave: () => advanceWave(mode === 'wave'),
+    toggle, step,
     seek: (seconds: number) => {
       const element = audio.current
       if (!element || !Number.isFinite(element.duration)) return

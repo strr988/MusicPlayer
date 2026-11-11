@@ -24,20 +24,4 @@
 
 `ListeningDataReader.getListeningData()` — независимый от Electron и React контракт чтения, объявленный в `src/shared/contracts.ts`. Его реализует `LibraryStore`. Снимок содержит обычные DTO `TrackPreference[]` и `PlaybackEvent[]`, без путей и объектов SQLite. Renderer читает его через именованный `getListeningData()` в Preload; изменения — через `setTrackPreference(trackId, liked)` и `recordPlaybackEvent(event)`.
 
-Предлагаемый будущий интерфейс чистого алгоритма:
-
-```ts
-interface RecommendationContext {
-  candidates: readonly Track[] // Main заранее отбирает доступные источники
-  preferences: readonly TrackPreference[]
-  history: readonly PlaybackEvent[]
-  now: string
-  seed: number
-}
-type RecommendationEngine = (
-  context: RecommendationContext,
-  count: number,
-) => string[] // упорядоченные Track ID
-```
-
-Алгоритм получает снимок от вызывающего слоя и не читает БД. Ошибки, `ended` без дослушивания и незавершённые сессии следует отличать от отрицательной реакции `skipped`. «Волна» в этом этапе не реализуется.
+Main передаёт снимок в чистый Recommendation Engine вместе с каталогом, доступностью источников, временем и seed. `started` используется для защиты от повторов, `skipped` и `completed` меняют оценку. Подробнее в [документации «Моей волны»](PERSONAL_WAVE.md).
