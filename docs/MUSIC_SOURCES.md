@@ -28,6 +28,11 @@ HTMLAudioElement в Electron 45.3.0 воспроизвёл синтетичес�
 
 ## Проверенный материал
 
-Сквозной тест Windows использует CHASMA — «A Tone Poem», оригинальный MP3 с CC BY 3.0. Тест проверяет анализ и обложку, загрузку, исправление названия в библиотеке, воспроизведение и тот же Track ID после перезапуска. Условие запуска — переменная `MUSIC_PLAYER_YTDLP_EXE` с путём к проверенному yt-dlp `2026.10.26`. В обычном CI сетевой тест пропускается. Окружение проверки — Electron `45.3.0`, Node.js `24.22.1` и pnpm `11.25.0`. Сценарий загрузки выполнялся без `ffmpeg.exe`, `ffprobe.exe` и внешнего JS runtime. Для FLAC проверены правила допуска оригинала на фикстуре и локальное воспроизведение. [Исходная запись и обложка](https://archive.org/details/jamendo-184210), [License.txt](https://archive.org/download/jamendo-184210/License.txt), [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/).
+В Windows проверены анализ, скачивание, исправление названия, воспроизведение и восстановление того же Track ID для двух записей Archive.org.
+
+- CHASMA — «A Tone Poem», оригинальный MP3 с CC BY 3.0. Тест также проверяет исходную обложку. [Запись и обложка](https://archive.org/details/jamendo-184210), [License.txt](https://archive.org/download/jamendo-184210/License.txt), [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/).
+- Artificial.Music & Storm Infinity — «Freefalling», оригинальный FLAC с CC BY 4.0. Тест проверяет, что ссылка на альбом требует выбора дорожки, а прямая ссылка на дорожку допускается. [Запись Archive.org](https://archive.org/details/SRS04107), [релиз артиста](https://artificialaryll.bandcamp.com/album/empty-vibes), [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+
+Для запуска сетевых тестов задайте `MUSIC_PLAYER_YTDLP_EXE` с путём к проверенному yt-dlp `2026.10.26` и запустите `pnpm test:desktop`. Обычный CI пропускает сетевые тесты. Окружение проверки — Electron `45.3.0`, Node.js `24.22.1` и pnpm `11.25.0`. Загрузки выполнялись без `ffmpeg.exe`, `ffprobe.exe` и внешнего JS runtime.
 
 [Анализ записи](screenshots/0.6.0-download-analysis.png) · [Завершённая загрузка](screenshots/0.6.0-download-completed.png).

@@ -117,19 +117,33 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     await waitFor('document.querySelector(".downloads h1")?.innerText === "Загрузки"', 'Downloads section')
     const statePath = join(profile, 'downloads-smoke.json')
     if (phase === 'downloads-restart') {
-      const { id, trackId } = JSON.parse(await readFile(statePath, 'utf8'))
+      const { id, trackId, title } = JSON.parse(await readFile(statePath, 'utf8'))
       const [restored] = await run('window.musicPlayer.downloads.list()')
       assert.deepEqual({ id: restored.id, trackId: restored.trackId, status: restored.status }, { id, trackId, status: 'completed' })
       const [track] = await run('window.musicPlayer.getTracks()')
-      assert.deepEqual([track.id, track.title, track.available], [trackId, 'A Tone Poem (edited)', true])
+      assert.deepEqual([track.id, track.title, track.available], [trackId, title, true])
       return
+    }
+    const flac = phase === 'downloads-live-flac'
+    const format = flac ? 'flac' : 'mp3'
+    const title = flac ? 'Freefalling (edited)' : 'A Tone Poem (edited)'
+    let url = 'https://archive.org/details/jamendo-184210'
+    if (flac) {
+      const album = 'https://archive.org/details/SRS04107'
+      await setInput('.download-form input', album)
+      await click('Анализировать ссылку')
+      await waitFor('document.querySelector(".downloads [role=alert]")?.textContent.includes("несколько записей")',
+        'collection download restriction', 55_000)
+      await click('Закрыть задачу')
+      const file = 'Artificial.Music & Storm Infinity - empty vibes - 03 freefalling (with storm infinity).flac'
+      url = album + '/' + encodeURIComponent(file)
     }
     if (phase === 'downloads-offline') {
       await setInput('.download-form input', 'https://127.0.0.1/details/demo')
       await click('Анализировать ссылку')
       await waitFor('document.querySelector(".downloads [role=alert]")?.textContent.includes("Поддерживаются ссылки")', 'unsupported URL message')
     }
-    await setInput('.download-form input', 'https://archive.org/details/jamendo-184210')
+    await setInput('.download-form input', url)
     await click('Анализировать ссылку')
     if (phase === 'downloads-offline') {
       await waitFor('document.querySelector(".downloads [role=alert]")?.textContent.includes("2026.10.26")', 'missing yt-dlp')
@@ -143,11 +157,15 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
       }, status, timeout)
     }
     const ready = await jobStatus('ready')
-    assert.equal(ready.metadata.downloadFormat, 'mp3')
-    assert.equal(ready.metadata.licenseUrl, 'https://creativecommons.org/licenses/by/3.0/')
-    assert.equal(ready.metadata.artist, 'CHASMA')
-    await waitFor('document.querySelector(".download-cover img")?.naturalWidth > 0', 'Archive.org cover')
-    const screenshotPath = process.env.MUSIC_PLAYER_DOWNLOAD_SCREENSHOTS
+    assert.equal(ready.metadata.downloadFormat, format)
+    assert.equal(ready.metadata.licenseUrl, flac ? 'https://creativecommons.org/licenses/by/4.0/' :
+      'https://creativecommons.org/licenses/by/3.0/')
+    if (!flac) {
+      assert.equal(ready.metadata.artist, 'CHASMA')
+      await waitFor('document.querySelector(".download-cover img")?.naturalWidth > 0', 'Archive.org cover')
+    }
+    await waitFor('!!document.querySelector(".download-fields input")', 'download metadata editor')
+    const screenshotPath = !flac && process.env.MUSIC_PLAYER_DOWNLOAD_SCREENSHOTS
     async function screenshot(name) {
       if (screenshotPath) await writeFile(join(screenshotPath, name), (await webContents.capturePage()).toPNG())
     }
@@ -156,8 +174,8 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
       await waitFor('innerHeight >= 800', 'screenshot layout')
     }
     await screenshot('0.6.0-download-analysis.png')
-    await setInput('.download-fields input', 'A Tone Poem (edited)')
-    await click('Скачать оригинал MP3')
+    await setInput('.download-fields input', title)
+    await click('Скачать оригинал ' + format.toUpperCase())
     const completed = await jobStatus('completed', 35_000)
     await waitFor('document.querySelector(".download-row")?.textContent.includes("Добавить в библиотеку")', 'completed job controls')
     await click('Добавить в библиотеку')
@@ -165,14 +183,14 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     await run('document.querySelector(".download-provenance").open = true')
     await screenshot('0.6.0-download-completed.png')
     const [track] = await run('window.musicPlayer.getTracks()')
-    assert.equal(track.title, 'A Tone Poem (edited)')
-    assert.equal(track.format, 'mp3')
+    assert.equal(track.title, title)
+    assert.equal(track.format, format)
     await click('Библиотека')
-    await waitFor('document.querySelector(".track-button")?.textContent.includes("A Tone Poem (edited)")', 'imported track row')
+    await waitFor(`document.querySelector(".track-button")?.textContent.includes(${JSON.stringify(title)})`, 'imported track row')
     await click('Без звука')
-    await click('A Tone Poem (edited)')
+    await click(title)
     await waitFor('document.querySelector("audio").currentTime > 0.2', 'imported track playback')
-    await writeFile(statePath, JSON.stringify({ id: completed.id, trackId: track.id }))
+    await writeFile(statePath, JSON.stringify({ id: completed.id, trackId: track.id, title }))
     return
   }
   assert.deepEqual(await run(`({

@@ -97,6 +97,15 @@ test('Archive.org downloads and plays an authorized original without FFmpeg, the
     await run('downloads-restart')
   })
 
+test('Archive.org rejects an album and downloads, plays and restores the selected authorized FLAC track',
+  { skip: !process.env.MUSIC_PLAYER_YTDLP_EXE, timeout: 140_000 }, async t => {
+    const { profile, run } = await prepareElectron(t)
+    await mkdir(join(profile, 'tools'), { recursive: true })
+    await copyFile(process.env.MUSIC_PLAYER_YTDLP_EXE, join(profile, 'tools', 'yt-dlp.exe'))
+    await run('downloads-live-flac', 100_000)
+    await run('downloads-restart')
+  })
+
 test('offline blind pilot plays local audio and exports only explicitly submitted answers', { timeout: 40_000 }, async t => {
   const { fixtures } = await prepareElectron(t)
   const manifestPath = join(fixtures, 'audio-map.json')
