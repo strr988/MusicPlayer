@@ -4,8 +4,10 @@ import type { ImportIssue, LibraryTrack, TrackPreference, WaveMode } from '../..
 import { Artwork } from './artwork'
 import { sortFields, visibleTracks } from './library-view'
 import type { SortDirection, SortField } from './library-view'
+import { useMediaControls } from './media-controls'
 import { formatTime, usePlayback } from './playback'
 import { Playlists } from './playlists'
+import { QueuePanel, TrackQueueActions } from './queue-panel'
 import { Timeline } from './timeline'
 
 const waveModeLabels: Record<WaveMode, string> = {
@@ -28,6 +30,8 @@ export function App() {
     trackRead.current++
     setTracks(previous => previous.map(track => track.id === trackId ? { ...track, available: false } : track))
   })
+  useMediaControls(playback)
+  const [queueOpen, setQueueOpen] = useState(false)
   const [waveMode, setWaveMode] = useState<WaveMode | null>(null)
   const [savingWaveMode, setSavingWaveMode] = useState(false)
   const [preferences, setPreferences] = useState<TrackPreference[]>([])
@@ -149,7 +153,7 @@ export function App() {
                 {!waveMode && <option value="">Режим «Волны»</option>}
                 {waveModes.map(mode => <option value={mode} key={mode}>{waveModeLabels[mode]}</option>)}
               </select>
-              <button className="primary" disabled={tracks.length === 0 || importing || playback.loading || !playback.volume || !waveMode || savingWaveMode}
+              <button className="primary" disabled={tracks.length === 0 || importing || playback.loading || !playback.ready || !waveMode || savingWaveMode}
                 onClick={() => void playback.startWave()}>Моя волна</button>
             </div>
           </div>
@@ -195,11 +199,12 @@ export function App() {
                 <th className="format-column">Формат</th>
                 <th aria-sort={sortField === 'durationSeconds' ? (direction === 'asc' ? 'ascending' : 'descending') : undefined}>Время</th>
                 <th>Лайк</th>
+                <th className="queue-column">Очередь</th>
               </tr></thead>
               <tbody>
                 {shown.map((track) => (
                   <tr key={track.id} data-current={track.id === playback.track?.id}>
-                    <td><button className="track-button" disabled={!playback.volume} onClick={() => playback.select(track.id)}
+                    <td><button className="track-button" disabled={!playback.ready} onClick={() => playback.select(track.id)}
                       aria-current={track.id === playback.track?.id ? 'true' : undefined}>
                       <Artwork key={track.artworkUrl} url={track.artworkUrl} />
                       <span className="truncate" title={track.title}>{track.title}</span>
@@ -213,6 +218,8 @@ export function App() {
                       disabled={!preferencesReady || pendingLike !== null} onClick={() => void toggleLike(track.id)}>
                       {likedTrackIds.has(track.id) ? '♥' : '♡'}
                     </button></td>
+                    <td className="queue-column"><TrackQueueActions title={track.title} disabled={!track.available || !playback.ready}
+                      add={next => { playback.addToQueue(track.id, next); setQueueOpen(true) }} /></td>
                   </tr>
                 ))}
               </tbody>
@@ -220,8 +227,9 @@ export function App() {
           )}
         </div>
         <div hidden={section !== 'playlists'}>
-          <Playlists tracks={tracks} playbackReady={!!playback.volume && !playback.loading}
-            onPlay={playback.startPlaylist} refreshTracks={refreshTracks} />
+          <Playlists tracks={tracks} playbackReady={playback.ready && !playback.loading}
+            onPlay={playback.startPlaylist} refreshTracks={refreshTracks}
+            onQueue={(id, next) => { playback.addToQueue(id, next); setQueueOpen(true) }} />
         </div>
       </main>
 
@@ -245,8 +253,8 @@ export function App() {
             <button aria-label="Предыдущий трек" title="Предыдущий трек" disabled={!playback.canGoBack} onClick={() => playback.step(-1)}>Ⅰ◀</button>
             <button className="play-button" aria-label={playback.playing ? 'Пауза' : 'Воспроизвести'}
               title={playback.playing ? 'Пауза' : 'Воспроизвести'}
-              disabled={tracks.length === 0 || playback.loading || !playback.volume} onClick={playback.toggle}>{playback.playing ? '❚❚' : '▶'}</button>
-            <button aria-label="Следующий трек" title="Следующий трек" disabled={!playback.canGoNext || !playback.volume} onClick={() => playback.step(1)}>▶Ⅰ</button>
+              disabled={tracks.length === 0 || playback.loading || !playback.ready} onClick={playback.toggle}>{playback.playing ? '❚❚' : '▶'}</button>
+            <button aria-label="Следующий трек" title="Следующий трек" disabled={!playback.canGoNext || !playback.ready} onClick={() => playback.step(1)}>▶Ⅰ</button>
           </div>
           <div className="volume flex items-center gap-2">
             <button className="mute" aria-label="Без звука" aria-pressed={playback.volume?.muted ?? false}
@@ -262,8 +270,9 @@ export function App() {
             <span>{Math.round((playback.volume?.level ?? 1) * 100)}%</span>
           </div>
           <Timeline audio={playback.audioProps.ref} duration={playback.duration}
-            trackDuration={playback.track?.durationSeconds ?? null} seek={playback.seek} />
+            trackDuration={playback.track?.durationSeconds ?? null} restoredPosition={playback.restoredPosition} seek={playback.seek} />
         </div>
+        <QueuePanel playback={playback} open={queueOpen} toggle={() => setQueueOpen(open => !open)} />
       </footer>
     </div>
   )

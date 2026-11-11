@@ -10,6 +10,7 @@ import { Library } from './library'
 import { serveMedia } from './media'
 import { Artwork } from './artwork'
 import { validatePlaybackEvent, validatePreference } from './feedback-validation'
+import { validatePlaybackSession } from './playback-session'
 import { generateWave } from '../recommendations/engine'
 
 const scheme = 'music-player'
@@ -62,6 +63,16 @@ async function chooseFolder(owner: BrowserWindow, library: Library): Promise<Imp
 }
 
 function registerIpc(library: Library): void {
+  ipcMain.handle(channels.getPlaybackSession, (event, ...args: unknown[]) => {
+    senderWindow(event)
+    if (args.length !== 0) throw new Error('Unexpected playback session arguments')
+    return library.getPlaybackSession()
+  })
+  ipcMain.handle(channels.setPlaybackSession, (event, ...args: unknown[]) => {
+    senderWindow(event)
+    if (args.length !== 1) throw new Error('Unexpected playback session arguments')
+    library.setPlaybackSession(validatePlaybackSession(args[0]))
+  })
   ipcMain.handle(channels.getWaveQueue, async (event, ...args: unknown[]) => {
     senderWindow(event)
     if (args.length !== 0) throw new Error('Unexpected wave arguments')

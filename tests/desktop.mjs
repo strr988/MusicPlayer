@@ -52,3 +52,15 @@ test('playlists and Wave mode work in Electron and persist across restarts', { t
   await run('playlist-restart')
   assert.deepEqual(await readFile(mp3), original)
 })
+
+test('queue edits, repeat transitions and paused session restoration work in Electron', { timeout: 75_000 }, async (t) => {
+  const { fixtures, run } = await prepareElectron(t)
+  await run('queue-import')
+  await rm(join(fixtures, '02.flac'))
+  await run('queue-restart')
+})
+
+test('Wave honors manual queue priorities, feedback and Media Session actions', { timeout: 40_000 }, async (t) => {
+  const { run } = await prepareElectron(t)
+  await run('wave-queue')
+})

@@ -3,7 +3,7 @@ import { lstat, open, readdir, realpath } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import { basename, extname, isAbsolute, join, relative, sep } from 'node:path'
 import { parseFile, parseStream } from 'music-metadata'
-import type { ImportIssue, ImportResult, LibraryTrack, Track, ListeningDataReader, PlaybackEventInput, VolumePreference, WaveMode } from '../shared/contracts'
+import type { ImportIssue, ImportResult, LibraryTrack, Track, ListeningDataReader, PlaybackEventInput, PlaybackSession, VolumePreference, WaveMode } from '../shared/contracts'
 import type { RecommendationCandidate } from '../recommendations/engine'
 import { LibraryStore } from './library-store'
 import type { LocalSource, ScanEntry } from './library-store'
@@ -97,6 +97,8 @@ export class Library implements ListeningDataReader {
 
   getVolume(): VolumePreference { return this.store.getVolume() }
   setVolume(volume: VolumePreference): void { this.store.setVolume(volume) }
+  getPlaybackSession() { return this.store.getPlaybackSession() }
+  setPlaybackSession(session: PlaybackSession): void { this.store.setPlaybackSession(session) }
 
   getWaveMode() { return this.store.getWaveMode() }
   setWaveMode(mode: WaveMode): void { this.store.setWaveMode(mode) }

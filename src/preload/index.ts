@@ -21,6 +21,8 @@ const api: MusicPlayerApi = {
   getPlayableSource: (trackId) => ipcRenderer.invoke(channels.getPlayableSource, trackId),
   getVolume: () => ipcRenderer.invoke(channels.getVolume),
   setVolume: (level, muted) => ipcRenderer.invoke(channels.setVolume, level, muted),
+  getPlaybackSession: () => ipcRenderer.invoke(channels.getPlaybackSession),
+  setPlaybackSession: (session) => ipcRenderer.invoke(channels.setPlaybackSession, session),
 }
 
 contextBridge.exposeInMainWorld('musicPlayer', api)

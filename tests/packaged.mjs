@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { access, copyFile, mkdir, mkdtemp, readFile, realpath, rename, rm, stat } from 'node:fs/promises'
+import { access, copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -153,6 +153,13 @@ test('unpacked Windows ZIP persists playlists and the Wave mode', { timeout: 90_
   assert.deepEqual(await readFile(mp3), await readFile(demoMp3))
 })
 
+test('unpacked Windows ZIP restores the advanced playback session silently', { timeout: 90_000 }, async (t) => {
+  const { root, folder, profile, app, flac } = await prepareRelease(t)
+  await verifyExe(app, root, profile, folder, 'queue-import')
+  await rm(flac)
+  await verifyExe(app, root, profile, folder, 'queue-restart')
+})
+
 const legacyArchive = process.env.MUSIC_PLAYER_011_ZIP
 test('upgrades a profile created by the original 0.1.1 Windows ZIP', { skip: !legacyArchive, timeout: 90_000 }, async (t) => {
   const { root, folder, profile, app } = await prepareRelease(t)
@@ -168,8 +175,36 @@ test('upgrades a profile created by the original 0.1.1 Windows ZIP', { skip: !le
   }
   const before = snapshot(3)
   await verifyExe(app, root, profile, folder, 'verify-upgrade')
-  const after = snapshot(4)
+  const after = snapshot(5)
   // Playback in the migrated application appends events to the existing history.
   after[5] = after[5].slice(0, before[5].length)
   assert.deepEqual(after, before)
+})
+
+const previousArchive = process.env.MUSIC_PLAYER_020_ZIP
+test('migrates a 0.2.0 profile and restores the verified pre-migration backup in the original EXE', { skip: !previousArchive, timeout: 120_000 }, async (t) => {
+  const { root, folder, profile, app } = await prepareRelease(t)
+  unpack(previousArchive, root)
+  const previous = join(root, 'Music Player 0.2.0')
+  await verifyExe(previous, root, profile, folder, 'playlist-import', '0.2.0')
+
+  function snapshot(file, schema) {
+    using db = new DatabaseSync(file, { readOnly: true })
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, schema)
+    assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), [])
+    const tables = db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name <> 'playback_session' ORDER BY name").all()
+    return Object.fromEntries(tables.map(({ name }) => [name, db.prepare(`SELECT * FROM "${name}" ORDER BY rowid`).all()]))
+  }
+  const database = join(profile, 'library.sqlite3')
+  const before = snapshot(database, 4)
+  await verifyExe(app, root, profile, folder, 'verify-v4')
+  assert.deepEqual(snapshot(database, 5), before)
+  const backups = (await readdir(profile)).filter(name => /^library\.sqlite3\.v4-.+\.backup$/.test(name))
+  assert.equal(backups.length, 1)
+  assert.deepEqual(snapshot(join(profile, backups[0]), 4), before)
+  const restored = join(root, 'Restored v4')
+  await mkdir(restored)
+  await copyFile(join(profile, backups[0]), join(restored, 'library.sqlite3'))
+  await copyFile(join(profile, 'smoke-state.json'), join(restored, 'smoke-state.json'))
+  await verifyExe(previous, root, restored, folder, 'verify-v4', '0.2.0')
 })

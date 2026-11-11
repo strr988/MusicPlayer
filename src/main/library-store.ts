@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { playerOrigin, playlistNameLimit } from '../shared/contracts'
-import type { Track, LibraryTrack, ListeningData, ListeningDataReader, PlaybackEventInput, Playlist, TrackPreference, VolumePreference, WaveMode } from '../shared/contracts'
+import type { Track, LibraryTrack, ListeningData, ListeningDataReader, PlaybackEventInput, PlaybackSession, Playlist, TrackPreference, VolumePreference, WaveMode } from '../shared/contracts'
 import type { FileIdentity } from './local-file'
+import { validatePlaybackSession } from './playback-session'
 
 const migrations = [
   `CREATE TABLE tracks (
@@ -68,6 +69,10 @@ const migrations = [
     mode TEXT NOT NULL CHECK (mode IN ('familiar', 'balance', 'discovery'))
   ) STRICT;
   INSERT INTO wave_settings VALUES (1, 'balance');`,
+  `CREATE TABLE playback_session (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    snapshot TEXT NOT NULL
+  ) STRICT;`,
 ]
 
 export interface LocalSource {
@@ -124,9 +129,18 @@ export class LibraryStore implements ListeningDataReader {
   constructor(path: string) {
     this.db = new DatabaseSync(path, { enableForeignKeyConstraints: true, timeout: 1_000 })
     try {
+      const { user_version: version } = this.db.prepare('PRAGMA user_version').get() as { user_version: number }
+      if (version < 0 || version > migrations.length) throw new Error(`Unsupported library schema ${version}`)
+      if (version > 0 && version < migrations.length && path !== ':memory:') {
+        const backupPath = `${path}.v${version}-${randomUUID()}.backup`
+        this.db.prepare('VACUUM INTO ?').run(backupPath)
+        using backup = new DatabaseSync(backupPath, { readOnly: true })
+        if (backup.prepare('PRAGMA user_version').get()?.user_version !== version ||
+            backup.prepare('PRAGMA quick_check').get()?.quick_check !== 'ok') {
+          throw new Error('Library backup verification failed')
+        }
+      }
       this.transaction(() => {
-        const { user_version: version } = this.db.prepare('PRAGMA user_version').get() as { user_version: number }
-        if (version < 0 || version > migrations.length) throw new Error(`Unsupported library schema ${version}`)
         for (let index = version; index < migrations.length; index++) {
           this.db.exec(migrations[index])
           this.db.exec(`PRAGMA user_version = ${index + 1}`)
@@ -140,6 +154,16 @@ export class LibraryStore implements ListeningDataReader {
 
   close(): void {
     this.db.close()
+  }
+
+  getPlaybackSession(): PlaybackSession | null {
+    const row = this.db.prepare('SELECT snapshot FROM playback_session WHERE id = 1').get()
+    return row ? validatePlaybackSession(JSON.parse(row.snapshot as string)) : null
+  }
+
+  setPlaybackSession(session: PlaybackSession): void {
+    this.db.prepare(`INSERT INTO playback_session VALUES (1, ?)
+      ON CONFLICT (id) DO UPDATE SET snapshot = excluded.snapshot`).run(JSON.stringify(session))
   }
 
   getListeningData(): ListeningData {

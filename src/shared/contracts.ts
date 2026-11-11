@@ -17,6 +17,8 @@ export const channels = {
   getPlayableSource: 'playback:get-source',
   getVolume: 'playback:get-volume',
   setVolume: 'playback:set-volume',
+  getPlaybackSession: 'playback:get-session',
+  setPlaybackSession: 'playback:set-session',
 } as const
 
 export const playerOrigin = 'music-player://app'
@@ -65,6 +67,36 @@ export interface VolumePreference {
   muted: boolean
 }
 
+export const repeatModes = ['off', 'all', 'one'] as const
+export type RepeatMode = typeof repeatModes[number]
+export type QueueSource =
+  | { type: 'library' | 'wave' }
+  | { type: 'playlist'; id: string; name: string }
+
+export interface QueueEntry {
+  id: string
+  trackId: string
+  kind: 'source' | 'manual' | 'recommendation'
+}
+
+export interface PlaybackQueue {
+  source: QueueSource
+  // The canonical order survives Shuffle and defines the next Repeat All cycle.
+  entries: QueueEntry[]
+  current: string | null
+  pending: string[]
+  history: string[]
+  shuffle: boolean
+  repeat: RepeatMode
+}
+
+export interface PlaybackSession {
+  queue: PlaybackQueue
+  position: number
+}
+
+export const queueEntryLimit = 50_000
+
 export interface TrackPreference {
   trackId: string
   liked: boolean
@@ -100,4 +132,6 @@ export interface MusicPlayerApi {
   getPlayableSource(trackId: string): Promise<PlayableSource | null>
   getVolume(): Promise<VolumePreference>
   setVolume(level: number, muted: boolean): Promise<void>
+  getPlaybackSession(): Promise<PlaybackSession | null>
+  setPlaybackSession(session: PlaybackSession): Promise<void>
 }

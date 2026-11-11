@@ -3,15 +3,17 @@ import { playlistNameLimit } from '../../shared/contracts'
 import type { LibraryTrack, Playlist } from '../../shared/contracts'
 import { Artwork } from './artwork'
 import { visibleTracks } from './library-view'
+import { TrackQueueActions } from './queue-panel'
 
 interface Props {
   tracks: LibraryTrack[]
   playbackReady: boolean
   onPlay: (playlist: Playlist) => void
   refreshTracks: () => Promise<void>
+  onQueue: (id: string, next: boolean) => void
 }
 
-export function Playlists({ tracks, playbackReady, onPlay, refreshTracks }: Props) {
+export function Playlists({ tracks, playbackReady, onPlay, refreshTracks, onQueue }: Props) {
   const api = window.musicPlayer
   const [playlists, setPlaylists] = useState<Playlist[] | null>(null)
   const [selectedId, setSelectedId] = useState('')
@@ -112,7 +114,7 @@ export function Playlists({ tracks, playbackReady, onPlay, refreshTracks }: Prop
       )}
       {selected && (
         <PlaylistTracks key={selected.id} playlist={selected} tracks={tracks} pending={pending}
-          playbackReady={playbackReady} onPlay={() => onPlay(selected)}
+          playbackReady={playbackReady} onPlay={() => onPlay(selected)} onQueue={onQueue}
           onAdd={trackId => void mutate(async () => {
             try { await updateTracks(() => api.addPlaylistTrack(selected.id, trackId)) }
             catch (error) { await refreshTracks(); throw error }
@@ -132,12 +134,13 @@ interface PlaylistTracksProps {
   pending: boolean
   playbackReady: boolean
   onPlay: () => void
+  onQueue: Props['onQueue']
   onAdd: (trackId: string) => void
   onRemove: (trackId: string) => void
   onMove: (trackId: string, offset: -1 | 1) => void
 }
 
-function PlaylistTracks({ playlist, tracks, pending, playbackReady, onPlay, onAdd, onRemove, onMove }: PlaylistTracksProps) {
+function PlaylistTracks({ playlist, tracks, pending, playbackReady, onPlay, onQueue, onAdd, onRemove, onMove }: PlaylistTracksProps) {
   const [query, setQuery] = useState('')
   const [candidateId, setCandidateId] = useState('')
   const byId = new Map(tracks.map(track => [track.id, track]))
@@ -179,6 +182,8 @@ function PlaylistTracks({ playlist, tracks, pending, playbackReady, onPlay, onAd
                 {track?.artist && <p className="muted truncate">{track.artist}</p>}
                 {!track?.available && <p className="muted">Файл недоступен</p>}
               </div>
+              <TrackQueueActions title={title} disabled={!track?.available || !playbackReady}
+                add={next => onQueue(id, next)} />
               <button className="secondary" aria-label={`Выше: ${title}`} title="Переместить выше"
                 disabled={pending || index === 0} onClick={() => onMove(id, -1)}>↑</button>
               <button className="secondary" aria-label={`Ниже: ${title}`} title="Переместить ниже"

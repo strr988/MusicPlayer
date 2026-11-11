@@ -1,12 +1,17 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { queueEntryLimit } from '../../shared/contracts'
+import type { LibraryTrack, PlaybackEventInput, PlaybackQueue, Playlist, QueueEntry, QueueSource, RepeatMode, VolumePreference } from '../../shared/contracts'
 import { ListeningSession } from './listening-session'
-import type { LibraryTrack, PlaybackEventInput, Playlist, VolumePreference } from '../../shared/contracts'
+import { emptyQueue, enqueue, goBack, movePending, previousEntry, removePending, repeatQueue, setShuffle, startQueue, takePending } from './playback-queue'
 
 export function formatTime(seconds: number | null): string {
   if (seconds === null) return '—'
   const whole = Math.floor(seconds)
   return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`
 }
+
+const newEntry = (trackId: string, kind: QueueEntry['kind']): QueueEntry => ({ id: crypto.randomUUID(), trackId, kind })
+type Transition = 'next' | 'back' | 'restart' | 'jump'
 
 export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: string) => void) {
   const audio = useRef<HTMLAudioElement>(null)
@@ -50,153 +55,64 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
     writes.current = writes.current.then(() => window.musicPlayer.recordPlaybackEvent(event))
       .catch(() => setFeedbackError('Не удалось сохранить историю воспроизведения.'))
   }
-  const [trackId, setTrackId] = useState<string | null>(null)
-  const [mode, setMode] = useState<'library' | 'playlist' | 'wave'>('library')
-  const [playlist, setPlaylist] = useState<Playlist | null>(null)
+
+  const [queue, setQueue] = useState(() => emptyQueue())
+  const queueRef = useRef(queue)
+  const position = useRef(0)
+  const resumeAt = useRef(0)
+  const played = useRef(false)
+  const busy = useRef(false)
+  const [sessionReady, setSessionReady] = useState(false)
+  const [restoredPosition, setRestoredPosition] = useState<number | null>(null)
+  const [storageError, setStorageError] = useState('')
+  const saveRevision = useRef(0)
+  const lastCheckpoint = useRef(0)
   const [waveNotice, setWaveNotice] = useState('')
   const [playing, setPlaying] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [duration, setDuration] = useState<number | null>(null)
-  const index = tracks.findIndex((track) => track.id === trackId)
-  const track = tracks[index]
-  const playlistIndex = playlist && trackId ? playlist.trackIds.indexOf(trackId) : -1
-  const availableIds = mode === 'playlist' ? new Set(tracks.filter(track => track.available).map(track => track.id)) : null
-  const playlistBack = playlist?.trackIds.findLastIndex((id, position) => position < playlistIndex && availableIds?.has(id)) ?? -1
-  const playlistNext = playlist?.trackIds.findIndex((id, position) => position > playlistIndex && availableIds?.has(id)) ?? -1
+  const tracksById = useMemo(() => new Map(tracks.map(track => [track.id, track])), [tracks])
+  const entriesById = useMemo(() => new Map(queue.entries.map(entry => [entry.id, entry])), [queue.entries])
+  const current = queue.current ? entriesById.get(queue.current) : undefined
+  const track = current && tracksById.get(current.trackId)
+  const mode = queue.source.type
 
-  async function play(element: HTMLAudioElement, id: number): Promise<boolean> {
-    try {
-      await element.play()
-      return true
-    } catch {
-      if (id === request.current) showMediaError()
-      return false
-    }
+  useEffect(() => {
+    let active = true
+    void window.musicPlayer.getPlaybackSession().then(saved => {
+      if (!active || !saved) return
+      queueRef.current = saved.queue
+      position.current = saved.position
+      setRestoredPosition(saved.position)
+      played.current = saved.queue.current !== null
+      setQueue(saved.queue)
+    }).catch(() => {
+      if (active) setStorageError('Не удалось восстановить очередь воспроизведения.')
+    }).finally(() => { if (active) setSessionReady(true) })
+    return () => { active = false }
+  }, [])
+
+  function persist(): void {
+    const revision = ++saveRevision.current
+    lastCheckpoint.current = performance.now()
+    void window.musicPlayer.setPlaybackSession({ queue: queueRef.current, position: position.current })
+      .then(() => { if (revision === saveRevision.current) setStorageError('') })
+      .catch(() => { if (revision === saveRevision.current) setStorageError('Не удалось сохранить очередь воспроизведения.') })
   }
 
-  function resetAudio(element: HTMLAudioElement): number {
-    const current = ++request.current
-    setError('')
-    session.current?.finish('manual', element.duration)
-    session.current = null
-    element.pause()
-    element.removeAttribute('src')
-    element.load()
-    setPlaying(false)
-    setDuration(null)
-    setLoading(true)
-    return current
+  function updateQueue(next: PlaybackQueue): void {
+    if (next === queueRef.current) return
+    queueRef.current = next
+    setQueue(next)
+    persist()
   }
 
-  async function loadTrack(element: HTMLAudioElement, id: string, current: number): Promise<boolean> {
-    setTrackId(id)
-    session.current = new ListeningSession(id, crypto.randomUUID(), record)
-    try {
-      const source = await window.musicPlayer.getPlayableSource(id)
-      if (current !== request.current) return false
-      if (!source) {
-        markUnavailable(id)
-        showMediaError()
-        return false
-      }
-      setError('')
-      element.src = source.url
-      return await play(element, current)
-    } catch {
-      if (current === request.current) showMediaError()
-      return false
+  function checkpoint(element: HTMLAudioElement): void {
+    if (!busy.current && element.hasAttribute('src') && !element.error && Number.isFinite(element.currentTime)) {
+      position.current = element.ended ? 0 : element.currentTime
+      persist()
     }
-  }
-
-  function select(id: string): void {
-    const element = audio.current
-    if (!element) return
-    const current = resetAudio(element)
-    void loadTrack(element, id, current).finally(() => {
-      if (current === request.current) setLoading(false)
-    })
-  }
-
-  async function playPlaylist(ids: readonly string[], start: number, offset: -1 | 1): Promise<void> {
-    const element = audio.current
-    if (!element || !ids[start]) return
-    const current = resetAudio(element)
-    try {
-      for (let index = start; ids[index] && current === request.current; index += offset) {
-        if (availableIds && !availableIds.has(ids[index])) continue
-        if (await loadTrack(element, ids[index], current)) break
-        if (current === request.current && element.hasAttribute('src')) {
-          element.removeAttribute('src')
-          element.load()
-        }
-      }
-    } finally {
-      if (current === request.current) setLoading(false)
-    }
-  }
-
-  async function advanceWave(avoidCurrent: boolean): Promise<void> {
-    const element = audio.current
-    if (!element || loading) return
-    setMode('wave')
-    setWaveNotice('')
-    const current = resetAudio(element)
-    try {
-      // Finishing the old session enqueues its terminal event before taking a new snapshot.
-      await writes.current
-      if (current !== request.current) return
-      const queue = await window.musicPlayer.getWaveQueue()
-      if (current !== request.current) return
-      const next = queue.find(id => !avoidCurrent || id !== trackId)
-      if (next) {
-        await loadTrack(element, next, current)
-      } else {
-        setTrackId(null)
-        setWaveNotice(queue.length > 0 ? 'В «Моей волне» больше нет других доступных треков.' :
-          'Для «Моей волны» нет доступных треков. Проверьте папки с музыкой.')
-      }
-    } catch {
-      if (current === request.current) {
-        setTrackId(null)
-        setError('Не удалось сформировать очередь «Моей волны».')
-      }
-    } finally {
-      if (current === request.current) setLoading(false)
-    }
-  }
-
-  function toggle(): void {
-    const element = audio.current
-    if (!element || loading) return
-    if (!element.paused) {
-      request.current++
-      element.pause()
-    } else if (element.hasAttribute('src') && !element.error && !element.ended) {
-      setError('')
-      void play(element, ++request.current)
-    } else if (mode === 'wave') {
-      void advanceWave(false)
-    } else if (mode === 'playlist' && playlist) {
-      const start = trackId && availableIds?.has(trackId) ? playlistIndex : Math.max(playlistNext, playlistBack)
-      void playPlaylist(playlist.trackIds, start, 1)
-    } else {
-      const id = track?.id ?? tracks[0]?.id
-      if (id) void select(id)
-    }
-  }
-
-  function step(offset: -1 | 1): void {
-    if (mode === 'wave') {
-      if (offset === 1) void advanceWave(true)
-      return
-    }
-    if (mode === 'playlist' && playlist) {
-      void playPlaylist(playlist.trackIds, offset === -1 ? playlistBack : playlistNext, offset)
-      return
-    }
-    const target = tracks[index + offset]
-    if (target) void select(target.id)
   }
 
   function showMediaError(): void {
@@ -205,39 +121,239 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
     setError('Не удалось воспроизвести файл. Если файл был изменён, импортируйте папку повторно.')
   }
 
+  async function play(element: HTMLAudioElement, token: number): Promise<boolean> {
+    try {
+      await element.play()
+      return token === request.current
+    } catch {
+      if (token === request.current) showMediaError()
+      return false
+    }
+  }
+
+  function resetAudio(element: HTMLAudioElement): number {
+    const token = ++request.current
+    busy.current = true
+    session.current?.finish('manual', element.duration)
+    session.current = null
+    element.pause()
+    element.removeAttribute('src')
+    element.load()
+    setPlaying(false)
+    setDuration(null)
+    setRestoredPosition(null)
+    setLoading(true)
+    setError('')
+    setWaveNotice('')
+    return token
+  }
+
+  async function loadTrack(element: HTMLAudioElement, entry: QueueEntry, token: number): Promise<boolean> {
+    if (tracksById.has(entry.trackId)) session.current = new ListeningSession(entry.trackId, crypto.randomUUID(), record)
+    try {
+      const source = await window.musicPlayer.getPlayableSource(entry.trackId)
+      if (token !== request.current) return false
+      if (!source) {
+        markUnavailable(entry.trackId)
+        showMediaError()
+        return false
+      }
+      element.src = source.url
+      return await play(element, token)
+    } catch {
+      if (token === request.current) showMediaError()
+      return false
+    }
+  }
+
+  async function navigate(direction: Transition, options: { id?: string; fresh?: PlaybackQueue; allowSame?: boolean; restore?: boolean } = {}): Promise<void> {
+    const element = audio.current
+    if (!element || !sessionReady || (busy.current && !options.fresh)) return
+    const previous = queueRef.current
+    const previousTrack = previous.entries.find(entry => entry.id === previous.current)?.trackId
+    let remember = played.current
+    const savedPosition = options.restore ? position.current : 0
+    const token = resetAudio(element)
+    if (options.fresh) {
+      remember = false
+      played.current = false
+      position.current = 0
+      updateQueue(options.fresh)
+    }
+    const attempted = new Set<string>()
+    let wrapped = false
+    let target = direction
+    try {
+      while (token === request.current) {
+        let state = queueRef.current
+        if (target === 'back') {
+          const earlier = goBack(state, remember)
+          if (earlier === state) break
+          state = earlier
+        } else if (target !== 'restart') {
+          if (target === 'next' && !state.pending.length && state.source.type !== 'wave' &&
+              state.repeat === 'all' && state.entries.length && !wrapped) {
+            state = repeatQueue(state)
+            state.pending = state.pending.filter(id => !attempted.has(id))
+            wrapped = true
+          }
+          let id = target === 'jump' ? options.id : state.pending[0]
+          if (!id && state.source.type === 'wave') {
+            // The terminal event must reach Main before it takes a recommendation snapshot.
+            await writes.current
+            if (token !== request.current) return
+            const recommendations = await window.musicPlayer.getWaveQueue()
+            if (token !== request.current) return
+            state = queueRef.current
+            id = state.pending[0]
+            if (!id) {
+              const trackId = recommendations.find(item => !attempted.has(item) && (options.allowSame || item !== previousTrack))
+              if (!trackId) {
+                setWaveNotice(recommendations.length ? 'В «Моей волне» больше нет других доступных треков.' :
+                  'Для «Моей волны» нет доступных треков. Проверьте папки с музыкой.')
+                break
+              }
+              const recommendation = newEntry(trackId, 'recommendation')
+              id = recommendation.id
+              state = { ...state, entries: [...state.entries, recommendation] }
+            }
+          }
+          if (!id || attempted.has(id)) break
+          state = takePending(state, id, remember && !wrapped)
+        }
+        const entry = state.entries.find(item => item.id === state.current)
+        if (!entry || attempted.has(entry.id)) break
+        attempted.add(entry.id)
+        if (state.source.type === 'wave') attempted.add(entry.trackId)
+        played.current = false
+        position.current = target === 'restart' ? savedPosition : 0
+        resumeAt.current = position.current
+        updateQueue(state)
+        if (state === previous && target === 'restart') persist()
+        if (await loadTrack(element, entry, token)) {
+          if (token === request.current) setError('')
+          return
+        }
+        if (token !== request.current) return
+        session.current = null
+        element.removeAttribute('src')
+        element.load()
+        remember = false
+        if (target !== 'back') target = 'next'
+      }
+    } catch {
+      if (token === request.current) setError('Не удалось сформировать очередь «Моей волны».')
+    } finally {
+      if (token === request.current) {
+        busy.current = false
+        setLoading(false)
+      }
+    }
+  }
+
+  function start(source: QueueSource, ids: string[], startAt: number): void {
+    if (startAt < 0 || !ids.length) return
+    if (ids.length > queueEntryLimit) {
+      setError('Очередь вмещает до 50 000 элементов.')
+      return
+    }
+    const entries = ids.map(id => newEntry(id, 'source'))
+    void navigate('next', { fresh: startQueue(queueRef.current, source, entries, startAt) })
+  }
+
+  function step(offset: -1 | 1): void {
+    const state = queueRef.current
+    if (offset === -1) {
+      if (previousEntry(state)) void navigate('back')
+    } else if (state.pending.length || state.source.type === 'wave' ||
+        (state.repeat === 'all' && state.entries.length)) {
+      void navigate('next')
+    }
+  }
+
+  function pause(): void {
+    const element = audio.current
+    if (element && !busy.current) {
+      element.pause()
+      checkpoint(element)
+    }
+  }
+
+  function resume(): void {
+    const element = audio.current
+    if (!element || !sessionReady || !volume || busy.current || !element.paused) return
+    const state = queueRef.current
+    if (element.hasAttribute('src') && !element.error && !element.ended) {
+      setError('')
+      void play(element, ++request.current)
+    } else if (state.current) {
+      void navigate('restart', { restore: !element.ended })
+    } else if (state.pending.length || state.source.type === 'wave') {
+      void navigate('next', { allowSame: true })
+    } else {
+      start({ type: 'library' }, tracks.map(item => item.id), 0)
+    }
+  }
+
+  function toggle(): void {
+    if (audio.current?.paused) resume()
+    else pause()
+  }
+
+  function addToQueue(trackId: string, next: boolean): void {
+    const state = queueRef.current
+    if (state.entries.length >= queueEntryLimit) {
+      setError('Очередь вмещает до 50 000 элементов.')
+      return
+    }
+    updateQueue(enqueue(state, newEntry(trackId, 'manual'), next))
+  }
+
+  function seek(seconds: number): void {
+    const element = audio.current
+    if (!element || !Number.isFinite(element.duration) || !Number.isFinite(seconds)) return
+    session.current?.suspend()
+    element.currentTime = Math.min(element.duration, Math.max(0, seconds))
+  }
+
+  const canGoBack = !loading && !!previousEntry(queue)
+  const canGoNext = !loading && (queue.pending.length > 0 || mode === 'wave' ||
+    (queue.repeat === 'all' && queue.entries.length > 0))
+
   return {
-    track, mode, playlistName: mode === 'playlist' ? playlist?.name : undefined,
-    playing, loading, error: error || feedbackError || volumeError, waveNotice, duration,
-    volume, changeVolume,
-    canGoBack: mode === 'playlist' ? !loading && playlistBack !== -1 : mode === 'library' && index > 0,
-    canGoNext: mode === 'wave' ? trackId !== null && !loading :
-      mode === 'playlist' ? !loading && playlistNext !== -1 :
-        index < tracks.length - 1,
-    select: (id: string) => {
-      setMode('library')
-      setWaveNotice('')
-      select(id)
+    queue, entriesById, tracksById, track, mode, playlistName: queue.source.type === 'playlist' ? queue.source.name : undefined,
+    playing, loading, ready: sessionReady && !!volume, error: error || feedbackError || volumeError || storageError,
+    waveNotice, duration, restoredPosition, volume, changeVolume, canGoBack, canGoNext,
+    addToQueue, pause, resume, toggle, step, seek,
+    changeShuffle: () => {
+      const state = queueRef.current
+      if (state.source.type !== 'wave') updateQueue(setShuffle(state, !state.shuffle))
     },
-    startWave: () => advanceWave(mode === 'wave'),
-    startPlaylist: (value: Playlist) => {
-      const available = new Set(tracks.filter(track => track.available).map(track => track.id))
-      const trackIds = value.trackIds.filter(id => available.has(id))
-      if (!trackIds.length) return
-      setMode('playlist')
-      setPlaylist({ ...value, trackIds })
-      void playPlaylist(trackIds, 0, 1)
+    changeRepeat: (repeat: RepeatMode) => updateQueue({ ...queueRef.current, repeat }),
+    move: (id: string, offset: -1 | 1) => updateQueue(movePending(queueRef.current, id, offset)),
+    remove: (id?: string) => updateQueue(removePending(queueRef.current, id)),
+    jump: (id: string) => {
+      if (queueRef.current.pending.includes(id)) void navigate('jump', { id })
     },
-    toggle, step,
-    seek: (seconds: number) => {
-      const element = audio.current
-      if (!element || !Number.isFinite(element.duration)) return
-      session.current?.suspend()
-      element.currentTime = seconds
+    select: (id: string) => start({ type: 'library' }, tracks.map(item => item.id), tracks.findIndex(item => item.id === id)),
+    startPlaylist: (playlist: Playlist) => start({ type: 'playlist', id: playlist.id, name: playlist.name }, playlist.trackIds, 0),
+    startWave: () => {
+      if (queueRef.current.source.type === 'wave') void navigate('next', { allowSame: !!waveNotice })
+      else void navigate('next', { fresh: startQueue(queueRef.current, { type: 'wave' }, [], 0), allowSame: true })
     },
     audioProps: {
       ref: audio,
+      onLoadedMetadata: () => {
+        const element = audio.current
+        if (element && resumeAt.current > 0 && Number.isFinite(element.duration)) {
+          // A checkpoint at the end starts this item from its beginning.
+          if (resumeAt.current < element.duration) element.currentTime = resumeAt.current
+          resumeAt.current = 0
+        }
+      },
       onPlaying: () => {
         if (!audio.current?.paused && audio.current?.hasAttribute('src')) {
+          played.current = true
           session.current?.playing()
           setPlaying(true)
         }
@@ -247,13 +363,21 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
       onSeeking: () => session.current?.suspend(),
       onSeeked: () => {
         const element = audio.current
-        if (element && !element.paused && element.readyState >= 3) session.current?.resume()
+        if (!element) return
+        if (!element.paused && element.readyState >= 3) session.current?.resume()
+        checkpoint(element)
+      },
+      onTimeUpdate: () => {
+        if (audio.current && performance.now() - lastCheckpoint.current >= 5_000) checkpoint(audio.current)
       },
       onEnded: () => {
-        if (!audio.current?.ended) return
-        session.current?.finish('ended', audio.current.duration)
+        const element = audio.current
+        if (!element?.ended) return
+        session.current?.finish('ended', element.duration)
         setPlaying(false)
-        step(1)
+        checkpoint(element)
+        if (queueRef.current.repeat === 'one') void navigate('restart')
+        else step(1)
       },
       onDurationChange: () => {
         const length = audio.current?.duration
