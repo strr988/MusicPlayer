@@ -18,14 +18,9 @@
 
 Синтетическая библиотека. [«Моя волна» и объяснение рекомендации, 0.5.0](docs/screenshots/0.5.0-wave-explanation.png) · [Очередь, 0.5.0](docs/screenshots/0.5.0-queue.png) · [Плейлисты, 0.4.1](docs/screenshots/0.4.1-playlists.png).
 
-## Скачать для Windows
+## Выпуск 0.5.0
 
-Проверенная платформа — Windows 11 x64. Node.js и pnpm нужны только для разработки.
-
-1. На странице [Music Player v0.5.0](https://github.com/strr988/MusicPlayer/releases/tag/v0.5.0) скачайте `MusicPlayer-0.5.0-win-x64.zip` и одноимённый файл `.sha256`.
-2. Выполните `Get-FileHash .\MusicPlayer-0.5.0-win-x64.zip -Algorithm SHA256` в PowerShell. Сравните хеш со значением из `.sha256`.
-3. Распакуйте весь архив и откройте **Music Player.exe**. EXE без цифровой подписи. На запуск могут влиять SmartScreen и политики Windows.
-4. Нажмите **Выбрать папку** и укажите папку с музыкой или **Demo audio** с двумя синтетическими треками.
+Выпуск [Music Player v0.5.0](https://github.com/strr988/MusicPlayer/releases/tag/v0.5.0) предназначен для распространения исходного кода. Готовый Windows ZIP пока недоступен. На Windows 11 x64 приложение можно собрать и запустить по инструкции ниже.
 
 ## Разработка
 
@@ -73,7 +68,7 @@ Electron, React, TypeScript, Tailwind CSS, SQLite через `node:sqlite`, musi
 
 ## Лицензия
 
-Лицензия Music Player ожидает утверждения владельцем. У зависимостей собственные лицензии. Уведомления Electron, Chromium и runtime-пакетов входят в Windows ZIP.
+Код Music Player распространяется по [лицензии MIT](LICENSE). Сторонние компоненты, включая npm-зависимости, Electron, Chromium и FFmpeg, распространяются на условиях их собственных лицензий. [Уведомления и состав Windows-сборки](docs/WINDOWS_RELEASE.md#сторонние-компоненты-zip).
 
 ## Документация
 

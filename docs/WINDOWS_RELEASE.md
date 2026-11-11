@@ -1,5 +1,7 @@
 # Music Player 0.5.0 для Windows x64
 
+Выпуск 0.5.0 распространяется в исходниках. Инструкция ниже предназначена для локально собранного или тестового Windows ZIP.
+
 ## Запуск и демонстрация
 
 1. В Проводнике выберите **Извлечь всё** для `MusicPlayer-0.5.0-win-x64.zip`. Сохраните все файлы распакованной папки рядом друг с другом.
@@ -40,7 +42,18 @@ GitHub Actions проверяет установку по lockfile, TypeScript, 
 
 Сборка использует DLL из официального Windows x64-дистрибутива Electron 45.3.0. В их числе `ffmpeg.dll`, DirectX Shader Compiler и SwiftShader. Уведомления Electron и Chromium находятся в `LICENSE` и `LICENSES.chromium.html` в корне распакованной папки. Уведомления npm-пакетов находятся внутри `resources/app/node_modules`. [Дистрибутив Electron 45.3.0](https://github.com/electron/electron/releases/tag/v45.3.0).
 
-Для распространения `ffmpeg.dll` необходимо выполнить условия LGPL для соответствующих исходников, включая патчи и настройки сборки. Electron 45.3.0 использует Chromium 156.0.8078.96 с ревизией FFmpeg `9db86ce5b5b454dfc96c435f9f0723012980c37f`. В конфигурации Electron включены дополнительные кодеки (`proprietary_codecs = true`, `ffmpeg_branding = "Chrome"`). Условия распространения этой конфигурации зависят от конкретных кодеков и территории. [Исходники FFmpeg](https://chromium.googlesource.com/chromium/third_party/ffmpeg/+/9db86ce5b5b454dfc96c435f9f0723012980c37f) · [Патчи Electron](https://github.com/electron/electron/tree/v45.3.0/patches/ffmpeg) · [Конфигурация Electron](https://github.com/electron/electron/blob/v45.3.0/build/args/all.gn) · [Условия распространения FFmpeg](https://ffmpeg.org/legal.html).
+### FFmpeg в проверенном архиве
+
+Electron 45.3.0 использует Chromium 156.0.8078.96 с ревизией FFmpeg `9db86ce5b5b454dfc96c435f9f0723012980c37f`. Хеш `ffmpeg.dll` в тестовом ZIP совпадает с файлом из официального дистрибутива Electron. Его конфигурация использует `ffmpeg_branding = "Chrome"` и `proprietary_codecs = true`. На Windows x64 отключены `CONFIG_GPL`, `CONFIG_GPLV3`, `CONFIG_VERSION3` и `CONFIG_NONFREE`. Для сборки применяется LGPL-2.1-or-later, отдельные файлы имеют собственные уведомления. [Конфигурация Electron](https://github.com/electron/electron/blob/v45.3.0/build/args/all.gn) · [Конфигурация FFmpeg](https://chromium.googlesource.com/chromium/third_party/ffmpeg/+/9db86ce5b5b454dfc96c435f9f0723012980c37f/chromium/config/Chrome/win/x64/config.h).
+
+В списке FFmpeg для этой конфигурации есть декодеры MP3, FLAC, AAC, H.264, Vorbis, Opus и PCM. Возможности FFmpeg шире форматов импорта Music Player. Патентные условия AAC и H.264 оцениваются отдельно от LGPL с учётом территории, использования и применимых прав распространителя. [Список декодеров](https://chromium.googlesource.com/chromium/third_party/ffmpeg/+/9db86ce5b5b454dfc96c435f9f0723012980c37f/chromium/config/Chrome/win/x64/libavcodec/codec_list.c) · [AAC](https://www.via-la.com/licensing-programs/aac/) · [AVC/H.264](https://www.via-la.com/licensing-programs/avc-h-264/).
+
+### Подготовка Windows ZIP к распространению
+
+1. Использовать официальный альтернативный `ffmpeg-v45.3.0-win32-x64.zip` для той же версии Electron и архитектуры. В нём `ffmpeg_branding = "Chromium"` и `proprietary_codecs = false`. Эта конфигурация сохраняет декодеры MP3 и FLAC. Оба формата воспроизвелись в сценарии «Моей волны» с альтернативной DLL во временной копии Electron. [Официальный дистрибутив](https://github.com/electron/electron/releases/tag/v45.3.0) · [Конфигурация альтернативной сборки](https://github.com/electron/electron/blob/v45.3.0/build/args/ffmpeg.gn).
+2. Сохранить уведомления и полный текст LGPL. В дистрибутиве и рядом со скачиванием явно указать использование FFmpeg и расположение лицензии и соответствующих исходников. Для опубликованной DLL предоставить доступ к точным исходникам FFmpeg с патчами Electron и файлами конфигурации, а также инструкциям и параметрам сборки Windows x64. В инструкции зафиксировать ревизии Chromium и Electron, команду сборки и способ проверки хеша DLL. [LGPL 2.1, §§ 4 и 6](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html) · [Исходники FFmpeg](https://chromium.googlesource.com/chromium/third_party/ffmpeg/+/9db86ce5b5b454dfc96c435f9f0723012980c37f) · [Патчи Electron](https://github.com/electron/electron/tree/v45.3.0/patches/ffmpeg) · [Сборка Electron](https://www.electronjs.org/docs/latest/development/build-instructions-windows/).
+3. Оставить `ffmpeg.dll` отдельным файлом рядом с EXE. Условия распространения должны позволять пользователю менять библиотеку и выполнять обратную разработку для отладки этих изменений. Проверить загрузку совместимой заменённой DLL после распаковки будущего ZIP. [LGPL 2.1, § 6](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html).
+4. До публикации проверить соответствующие исходники и уведомления, применимые права распространения выбранного комплекта и весь распакованный ZIP. Выполнить сценарии MP3/FLAC и миграции, опубликовать SHA-256 нового архива. Исходный тестовый ZIP 0.5.0 хранится локально.
 
 ## Проверка обновления
 
