@@ -185,7 +185,7 @@ async function start(): Promise<void> {
     app.quit()
     return
   }
-  const library = new Library(join(userData, 'library.sqlite3'))
+  const library = new Library(join(userData, 'library.sqlite3'), join(userData, 'music-downloads'))
   const artwork = new Artwork(library)
   const downloads = new DownloadManager(userData, new YtDlpProvider(join(userData, 'tools', 'yt-dlp.exe')), library)
   let quitting = false

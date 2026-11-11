@@ -1,10 +1,10 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { lstat, mkdir, mkdtemp, open, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { playerOrigin } from '../../shared/contracts'
 import type { DownloadJob, MetadataEdits } from '../../shared/music-sources'
 import { artworkMime, maxImageBytes } from '../artwork'
-import type { Library } from '../library'
+import type { DownloadIntegrity, Library } from '../library'
 import { maxAudioBytes } from './archive'
 import type { MusicSourceProvider } from './archive'
 
@@ -24,9 +24,9 @@ interface Job {
   selectedCover?: Buffer | null
   controller: AbortController
   path?: string
-  importing?: Promise<void>
+  importing?: { controller: AbortController; completion: Promise<boolean> }
+  integrity?: DownloadIntegrity
   size?: number
-  sha1?: string
   committing?: boolean
 }
 
@@ -128,18 +128,21 @@ export class DownloadManager {
     const link = this.provider.recognize(metadata.originalUrl)
     if (metadata.sourceId !== `${link.item}/${link.file}`) return
     const path = join(directory, `audio.${format}`)
-    const stat = await lstat(path)
-    if (!stat.isFile() || stat.size !== saved.size || await realpath(path) !== path) return
+    const stat = await lstat(path).catch(() => undefined)
+    const available = stat?.isFile() && stat.size === saved.size && await realpath(path).catch(() => undefined) === path
     const edits = metadataEdits(saved.edits ?? {})
     const cover = await boundedFile(join(directory, 'cover.img'), maxImageBytes).catch(() => null)
     const selectedCover = cover && artworkMime(cover) ? cover : null
     const snapshot: DownloadJob = {
-      id, url: link.url, status: 'completed', metadata, edits,
+      id, url: link.url, status: available ? 'completed' : 'failed', metadata, edits,
       trackId: this.library.getExternalTrackId(metadata),
       coverUrl: selectedCover ? `${playerOrigin}/download-artwork/${id}` : undefined,
+      error: available ? undefined : 'Загруженный файл отсутствует или его размер изменился.',
+      canDismiss: false,
     }
     this.jobs.set(id, {
-      snapshot, link, selectedCover, path, size: saved.size, sha1: saved.sha1, controller: new AbortController(),
+      snapshot, link, selectedCover, path, size: stat?.isFile() ? stat.size : undefined,
+      integrity: { size: saved.size, sha1: saved.sha1 }, controller: new AbortController(),
     })
   }
 
@@ -152,7 +155,7 @@ export class DownloadManager {
     await this.ready()
     return [...this.jobs.values()].reverse().map(job => {
       const { status, metadata } = job.snapshot
-      if (status !== 'ready' || !metadata) return { ...job.snapshot }
+      if (status !== 'ready' || !metadata) return { ...job.snapshot, importing: !!job.importing }
       const trackId = this.library.getExternalTrackId(metadata)
       return { ...job.snapshot, trackId, duplicate: trackId !== undefined || this.hasDownload(job, metadata.sourceId) }
     })
@@ -254,22 +257,21 @@ export class DownloadManager {
       signal.throwIfAborted()
       job.snapshot.status = 'processing'
       job.snapshot.progress = undefined
-      await this.library.validateDownloadedAudio(partial, format).catch(error => {
-        if (error.code) throw error
-        throw new Error('Формат аудио не поддерживается или файл повреждён.')
-      })
-      const { id, metadata, edits } = job.snapshot
       const { size, sha1 } = analysis.original!
-      await writeFile(join(directory, 'download.json'), JSON.stringify({ metadata, edits, size, sha1 }), { flag: 'wx', signal })
-      if (job.selectedCover) await writeFile(join(directory, 'cover.img'), job.selectedCover, { flag: 'wx', signal })
+      await this.library.validateDownloadedAudio(partial, format, { size, sha1 }, signal)
       signal.throwIfAborted()
+      const { id, metadata, edits } = job.snapshot
+      const options = { flag: 'wx', signal, flush: true }
+      await writeFile(join(directory, 'download.json'), JSON.stringify({ metadata, edits, size, sha1 }), options)
+      if (job.selectedCover) await writeFile(join(directory, 'cover.img'), job.selectedCover, options)
       const destination = join(this.root, id)
-      job.committing = true
       await rename(partial, join(directory, name))
+      signal.throwIfAborted()
+      job.committing = true
       await rename(directory, destination)
       job.path = join(destination, name)
       job.size = size
-      job.sha1 = sha1
+      job.integrity = { size, sha1 }
       job.snapshot.status = 'completed'
       job.snapshot.coverUrl = job.selectedCover ? `${playerOrigin}/download-artwork/${id}` : undefined
       job.analysis = undefined
@@ -279,6 +281,10 @@ export class DownloadManager {
 
   cancel(id: string): void {
     const job = this.get(id)
+    if (job.importing) {
+      job.importing.controller.abort()
+      return
+    }
     if (!job.committing && ['waiting', 'analyzing', 'ready', 'downloading', 'processing'].includes(job.snapshot.status)) {
       job.controller.abort()
       job.snapshot.status = 'cancelled'
@@ -288,7 +294,9 @@ export class DownloadManager {
 
   dismiss(id: string): void {
     const job = this.get(id)
-    if (!['failed', 'cancelled', 'ready'].includes(job.snapshot.status)) throw new Error('Эту задачу нельзя закрыть.')
+    if (job.snapshot.canDismiss === false || !['failed', 'cancelled', 'ready'].includes(job.snapshot.status)) {
+      throw new Error('Эту задачу нельзя закрыть.')
+    }
     this.cancel(id)
     this.jobs.delete(id)
   }
@@ -319,35 +327,32 @@ export class DownloadManager {
     return path
   }
 
-  addToLibrary(id: string): Promise<void> {
+  addToLibrary(id: string): Promise<boolean> {
     if (this.stopped) throw new Error('Приложение закрывается.')
     const job = this.get(id)
-    job.importing ??= this.file(id).then(async path => {
-      const file = await open(path, 'r')
-      try {
-        const hash = createHash('sha1')
-        let size = 0
-        for await (const chunk of file.createReadStream({ autoClose: false })) {
-          size += chunk.length
-          if (size > job.size!) throw new Error('Содержимое загруженного файла изменилось.')
-          hash.update(chunk)
-        }
-        if (size !== job.size || hash.digest('hex') !== job.sha1) throw new Error('Содержимое загруженного файла изменилось.')
-      } finally {
-        await file.close()
-      }
+    if (job.importing) return job.importing.completion
+    const controller = new AbortController()
+    const completion = this.file(id).then(async path => {
       job.snapshot.trackId = await this.library.importDownload(path, job.snapshot.metadata!,
-        job.snapshot.edits ?? {}, job.selectedCover ?? null)
-    }).catch(error => { throw new Error(message(error)) }).finally(() => { job.importing = undefined })
-    return job.importing
+        job.snapshot.edits ?? {}, job.selectedCover ?? null, job.integrity!, controller.signal)
+      return true
+    }).catch(error => {
+      if (controller.signal.aborted) return false
+      throw new Error(message(error))
+    }).finally(() => { job.importing = undefined })
+    job.importing = { controller, completion }
+    return completion
   }
 
   async stop(): Promise<void> {
     this.stopped = true
-    for (const job of this.jobs.values()) job.controller.abort()
+    for (const job of this.jobs.values()) {
+      job.controller.abort()
+      job.importing?.controller.abort()
+    }
     await this.prepared
     await this.pending
-    await Promise.allSettled([...this.jobs.values()].map(job => job.importing))
+    await Promise.allSettled([...this.jobs.values()].map(job => job.importing?.completion))
   }
 
   private get(id: string): Job {

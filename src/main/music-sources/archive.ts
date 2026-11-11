@@ -222,7 +222,7 @@ export class YtDlpProvider implements MusicSourceProvider {
         callback(null, chunk)
       },
     })
-    await pipeline(response, limit, createWriteStream(path, { flags: 'wx' }), { signal })
+    await pipeline(response, limit, createWriteStream(path, { flags: 'wx', flush: true }), { signal })
     if (bytes !== expected.size || hash.digest('hex') !== expected.sha1) throw new Error('Скачанный файл не прошёл проверку целостности.')
   }
 }

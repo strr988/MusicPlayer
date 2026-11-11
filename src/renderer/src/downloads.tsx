@@ -15,6 +15,7 @@ function errorText(error: unknown): string {
 
 const api = () => window.musicPlayer.downloads
 const megabytes = new Intl.NumberFormat('ru', { maximumFractionDigits: 1 })
+const metadataHint = 'Правки метаданных сохраняются в библиотеке Music Player. Теги аудиофайла не переписываются.'
 
 export function Downloads({ active, onImport }: { active: boolean; onImport: () => Promise<void> }) {
   const [jobs, setJobs] = useState<DownloadJob[]>([])
@@ -81,7 +82,7 @@ function DownloadRow({ job, onImport }: { job: DownloadJob; onImport: () => Prom
   const [busy, setBusy] = useState(false)
   const { id, status, metadata, edits, progress, duplicate } = job
   const cancelable = ['waiting', 'analyzing', 'downloading', 'processing'].includes(status)
-  const dismissible = ['failed', 'cancelled', 'ready'].includes(status)
+  const dismissible = job.canDismiss !== false && ['failed', 'cancelled', 'ready'].includes(status)
   const title = edits?.title === undefined ? metadata?.title : edits.title
 
   async function act(action: () => Promise<unknown>) {
@@ -116,12 +117,21 @@ function DownloadRow({ job, onImport }: { job: DownloadJob; onImport: () => Prom
         await act(async () => { cover = await api().chooseCover(id) })
         return cover
       }} />}
-    {status === 'completed' && <div className="download-actions">
-      {!job.trackId && <button type="button" className="primary" disabled={busy}
-        onClick={() => void act(async () => { await api().addToLibrary(id); await onImport() })}>Добавить в библиотеку</button>}
-      {job.trackId && <span>В библиотеке</span>}
-      <button type="button" className="secondary" disabled={busy} onClick={() => void act(() => api().reveal(id))}>Показать файл</button>
-    </div>}
+    {status === 'completed' && <>
+      <div className="download-actions">
+        {!job.trackId && !job.importing && <button type="button" className="primary" disabled={busy}
+          onClick={() => void act(async () => { if (await api().addToLibrary(id)) await onImport() })}>Добавить в библиотеку</button>}
+        {job.importing && <>
+          <span role="status">Импорт в библиотеку…</span>
+          <button type="button" className="secondary" onClick={() => {
+            void api().cancel(id).catch(failure => setError(errorText(failure)))
+          }}>Отменить импорт</button>
+        </>}
+        {job.trackId && <span>В библиотеке</span>}
+        <button type="button" className="secondary" disabled={busy || job.importing} onClick={() => void act(() => api().reveal(id))}>Показать файл</button>
+      </div>
+      {!job.trackId && <p className="download-provenance">{metadataHint}</p>}
+    </>}
     {status === 'completed' && metadata && <details className="download-provenance">
       <summary>Источник и лицензия</summary>
       <SourceDetails metadata={metadata} />
@@ -175,6 +185,7 @@ function MetadataForm({ metadata, coverUrl, duplicate, busy, confirm, chooseCove
     <SourceDetails metadata={metadata} />
     {duplicate && <p className="notice">Эта запись уже есть в библиотеке или менеджере загрузок.</p>}
     {metadata.restriction && <p className="notice">{metadata.restriction}</p>}
+    {editable && <p className="notice">{metadataHint}</p>}
     {editable && <div className="download-actions"><button className="primary" type="submit" disabled={busy}>
       <Icon name="download" />Скачать оригинал {metadata.downloadFormat?.toUpperCase()}
     </button></div>}

@@ -1,4 +1,5 @@
-import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, truncate, writeFile } from 'node:fs/promises'
+import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -6,11 +7,18 @@ import { afterEach, expect, test, vi } from 'vitest'
 import { Library } from '../src/main/library'
 import { archiveLink, normalizeArchive } from '../src/main/music-sources/archive'
 import type { MusicSourceProvider } from '../src/main/music-sources/archive'
+import type { MetadataEdits } from '../src/shared/music-sources'
 import { DownloadManager, metadataEdits } from '../src/main/music-sources/download-manager'
 import { publicAddress, validateArchiveEndpoint, withArchiveProxy } from '../src/main/music-sources/network'
 import { checkVersion, verifiedYtDlp, ytDlpVersion } from '../src/main/music-sources/yt-dlp'
 import { request } from 'node:http'
 import { createHash } from 'node:crypto'
+import { parseFile } from 'music-metadata'
+
+vi.mock('music-metadata', async importOriginal => {
+  const actual = await importOriginal<typeof import('music-metadata')>()
+  return { ...actual, parseFile: vi.fn(actual.parseFile) }
+})
 
 const audio = new URL('./fixtures/01-tone.mp3', import.meta.url)
 const item = 'example'
@@ -134,6 +142,20 @@ function provider(overrides: Partial<MusicSourceProvider> = {}): MusicSourceProv
   }
 }
 
+async function confirmDownload(manager: DownloadManager, edits: MetadataEdits = {}) {
+  await manager.analyze(url)
+  await vi.waitFor(async () => expect((await manager.list())[0].status).toBe('ready'))
+  const [{ id }] = await manager.list()
+  await manager.confirm(id, edits)
+  return id
+}
+
+function latch() {
+  let resolve!: () => void
+  const promise = new Promise<void>(release => { resolve = release })
+  return { promise, resolve }
+}
+
 test('serializes jobs, applies queue capacity, cancels and removes staging data', async () => {
   const directory = await profile()
   const library = new Library(':memory:')
@@ -219,6 +241,212 @@ test('validates edits and preserves explicit empty values', () => {
   expect(() => metadataEdits({ durationSeconds: Infinity })).toThrow()
 })
 
+test('cancellation during processing leaves no published download or library entry', async () => {
+  const directory = await profile()
+  const library = new Library(':memory:')
+  const manager = new DownloadManager(directory, provider(), library)
+  const gate = latch()
+  const validate = library.validateDownloadedAudio.bind(library)
+  vi.spyOn(library, 'validateDownloadedAudio').mockImplementationOnce(async (...args) => {
+    await gate.promise
+    await validate(...args)
+  })
+  try {
+    const id = await confirmDownload(manager)
+    await vi.waitFor(async () => expect((await manager.list())[0].status).toBe('processing'))
+    manager.cancel(id)
+    gate.resolve()
+    await vi.waitFor(async () => {
+      expect((await manager.list())[0].status).toBe('cancelled')
+      expect(await readdir(join(directory, 'music-downloads'))).toEqual([])
+    })
+    expect(library.getTracks()).toEqual([])
+  } finally {
+    gate.resolve()
+    await manager.stop()
+    library.close()
+  }
+})
+
+test('does not publish a playable file with the wrong checksum', async () => {
+  const directory = await profile()
+  const library = new Library(':memory:')
+  const manager = new DownloadManager(directory, provider({
+    async download(_link, _analysis, path) {
+      const modified = Buffer.from(audioBytes)
+      modified[modified.length - 1] ^= 1
+      await writeFile(path, modified)
+    },
+  }), library)
+  try {
+    await confirmDownload(manager)
+    await vi.waitFor(async () => expect((await manager.list())[0]).toMatchObject({
+      status: 'failed', error: 'Содержимое загруженного файла изменилось.',
+    }))
+    expect(await readdir(join(directory, 'music-downloads'))).toEqual([])
+  } finally {
+    await manager.stop()
+    library.close()
+  }
+})
+
+test('cancellation after the import hash check keeps the download and allows retry', async () => {
+  const directory = await profile()
+  const library = new Library(join(directory, 'library.sqlite3'))
+  const manager = new DownloadManager(directory, provider(), library)
+  const gate = latch()
+  const parsing = latch()
+  try {
+    const id = await confirmDownload(manager, { title: 'Edited title' })
+    await vi.waitFor(async () => expect((await manager.list())[0].status).toBe('completed'))
+    const actual = await vi.importActual<typeof import('music-metadata')>('music-metadata')
+    vi.mocked(parseFile).mockImplementationOnce(async (...args) => {
+      parsing.resolve()
+      await gate.promise
+      return actual.parseFile(...args)
+    })
+    const importing = manager.addToLibrary(id)
+    await parsing.promise
+    expect((await manager.list())[0].importing).toBe(true)
+    manager.cancel(id)
+    gate.resolve()
+    await expect(importing).resolves.toBe(false)
+    expect((await manager.list())[0]).toMatchObject({ status: 'completed', importing: false })
+    expect(library.getTracks()).toEqual([])
+    expect(await readFile(await manager.file(id))).toEqual(audioBytes)
+    await expect(manager.addToLibrary(id)).resolves.toBe(true)
+    expect(library.getTracks()[0].title).toBe('Edited title')
+  } finally {
+    gate.resolve()
+    await manager.stop()
+    library.close()
+  }
+})
+
+test('a same-size replacement while the import waits fails integrity verification and rolls back failed SQLite writes', async () => {
+  const directory = await profile()
+  const dbPath = join(directory, 'library.sqlite3')
+  const library = new Library(dbPath)
+  const manager = new DownloadManager(directory, provider(), library)
+  const gate = latch()
+  const entered = latch()
+  try {
+    const id = await confirmDownload(manager)
+    await vi.waitFor(async () => expect((await manager.list())[0].status).toBe('completed'))
+    const imported = library.importDownload.bind(library)
+    vi.spyOn(library, 'importDownload').mockImplementationOnce(async (...args) => {
+      entered.resolve()
+      await gate.promise
+      return imported(...args)
+    })
+    const path = await manager.file(id)
+    const importing = manager.addToLibrary(id)
+    await entered.promise
+    const modified = Buffer.from(audioBytes)
+    modified[modified.length - 1] ^= 1
+    await writeFile(path, modified)
+    gate.resolve()
+    await expect(importing).rejects.toThrow('Содержимое загруженного файла изменилось')
+    expect(library.getTracks()).toEqual([])
+
+    await writeFile(path, audioBytes)
+    using db = new DatabaseSync(dbPath)
+    db.exec(`CREATE TRIGGER reject_external BEFORE INSERT ON external_recordings
+      BEGIN SELECT RAISE(ABORT, 'forced import failure'); END;`)
+    await expect(manager.addToLibrary(id)).rejects.toThrow()
+    for (const table of ['tracks', 'sources', 'local_files', 'external_recordings']) {
+      expect(db.prepare(`SELECT * FROM ${table}`).all()).toEqual([])
+    }
+    expect(db.prepare('PRAGMA integrity_check').get()).toEqual({ integrity_check: 'ok' })
+    expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+    db.exec('DROP TRIGGER reject_external')
+    await expect(manager.addToLibrary(id)).resolves.toBe(true)
+
+    const [track] = library.getTracks()
+    await writeFile(path, modified)
+    expect((await parseFile(path)).format.codec).toMatch(/Layer 3$/)
+    const scan = await library.importFolder(join(directory, 'music-downloads'))
+    expect(scan.issues).toHaveLength(1)
+    expect(scan.tracks).toEqual([{ ...track, available: false }])
+    await expect(library.getAvailableSource(library.getSourceId(track.id)!)).resolves.toBeUndefined()
+  } finally {
+    gate.resolve()
+    await manager.stop()
+    library.close()
+  }
+})
+
+test('recovers committed data and drops unpublished staging after a process is killed with an open SQLite transaction', async () => {
+  const directory = await profile()
+  const root = join(directory, 'music-downloads')
+  const dbPath = join(directory, 'library.sqlite3')
+  let library = new Library(dbPath, root)
+  let libraryClosed = false
+  let manager = new DownloadManager(directory, provider(), library)
+  try {
+    const id = await confirmDownload(manager, { title: 'Committed title' })
+    await vi.waitFor(async () => expect((await manager.list())[0].status).toBe('completed'))
+    await manager.addToLibrary(id)
+    const [track] = library.getTracks()
+    library.setTrackPreference(track.id, true)
+    const path = await manager.file(id)
+    await manager.stop()
+    library.close()
+    libraryClosed = true
+
+    const stage = join(root, '.stage-AbC123')
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import { DatabaseSync } from 'node:sqlite'
+      import { copyFileSync, mkdirSync, writeSync } from 'node:fs'
+      import { dirname, join } from 'node:path'
+      const [dbPath, stage, audio] = process.argv.slice(1)
+      const db = new DatabaseSync(dbPath)
+      db.exec("PRAGMA cache_size = 1; BEGIN IMMEDIATE; UPDATE tracks SET title = 'Uncommitted'; " +
+        "UPDATE external_recordings SET cover = zeroblob(500000)")
+      mkdirSync(stage)
+      copyFileSync(audio, join(stage, 'audio.mp3'))
+      copyFileSync(join(dirname(audio), 'download.json'), join(stage, 'download.json'))
+      writeSync(1, 'transaction open')
+      process.kill(process.pid, 'SIGKILL')
+    `, dbPath, stage, path], { encoding: 'utf8', timeout: 5_000, windowsHide: true })
+    expect(child.error).toBeUndefined()
+    expect(child.stdout).toBe('transaction open')
+    expect(child.status).not.toBe(0)
+    expect(await readdir(directory)).toContain('library.sqlite3-journal')
+
+    library = new Library(dbPath, root)
+    libraryClosed = false
+    expect((await library.importFolder(stage)).processed).toBe(0)
+    manager = new DownloadManager(directory, provider(), library)
+    expect(await manager.list()).toEqual([expect.objectContaining({ id, status: 'completed', trackId: track.id })])
+    expect(await readdir(root)).toEqual([id])
+    await expect(manager.addToLibrary(id)).resolves.toBe(true)
+    expect(library.getTracks()).toEqual([track])
+    expect(library.getDownloadCover(track.id)).toBeNull()
+    expect(library.getListeningData().preferences[0]).toMatchObject({ trackId: track.id, liked: true })
+    expect(await readFile(path)).toEqual(audioBytes)
+    {
+      using db = new DatabaseSync(dbPath, { readOnly: true })
+      expect(db.prepare('PRAGMA integrity_check').get()).toEqual({ integrity_check: 'ok' })
+      expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+    }
+
+    await manager.stop()
+    await truncate(path, audioBytes.length - 1)
+    manager = new DownloadManager(directory, provider(), library)
+    expect(await manager.list()).toEqual([expect.objectContaining({
+      id, trackId: track.id, status: 'failed', canDismiss: false,
+      error: 'Загруженный файл отсутствует или его размер изменился.',
+    })])
+    expect(() => manager.dismiss(id)).toThrow('Эту задачу нельзя закрыть.')
+    await library.refreshAvailability()
+    expect(library.getTracks()).toEqual([{ ...track, available: false }])
+  } finally {
+    await manager.stop()
+    if (!libraryClosed) library.close()
+  }
+})
+
 test('imports a completed task, survives a restart and deduplicates by source identity', async () => {
   const directory = await profile()
   const dbPath = join(directory, 'library.sqlite3')
@@ -252,6 +480,7 @@ test('imports a completed task, survives a restart and deduplicates by source id
     await expect(manager.addToLibrary(id)).rejects.toThrow('Содержимое загруженного файла изменилось')
     await writeFile(downloaded, audioBytes)
     await Promise.all([manager.addToLibrary(id), manager.addToLibrary(id)])
+    expect(await readFile(downloaded)).toEqual(audioBytes)
     const trackId = (await manager.list())[0].trackId!
     await library.importFolder(join(directory, 'music-downloads'))
     expect(library.getTracks()).toHaveLength(2)
@@ -260,6 +489,7 @@ test('imports a completed task, survives a restart and deduplicates by source id
     library = new Library(dbPath)
     manager = new DownloadManager(directory, fixture, library)
     expect((await manager.list())[0]).toMatchObject({ status: 'completed', trackId })
+    await expect(manager.addToLibrary(id)).resolves.toBe(true)
     expect(library.getTracks().find(track => track.id === trackId)).toMatchObject({
       title: 'Edited title', artist: 'Edited artist', durationSeconds: null, available: true,
     })

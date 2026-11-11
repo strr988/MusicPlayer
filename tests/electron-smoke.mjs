@@ -116,11 +116,26 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     await click('Загрузки')
     await waitFor('document.querySelector(".downloads h1")?.innerText === "Загрузки"', 'Downloads section')
     const statePath = join(profile, 'downloads-smoke.json')
+    if (phase === 'downloads-recovery-commit') {
+      const [job] = await run('window.musicPlayer.downloads.list()')
+      assert.equal(job.status, 'completed')
+      await waitFor('document.querySelector(".download-row")?.textContent.includes("Теги аудиофайла не переписываются")',
+        'library-only metadata notice before import')
+      await click('Добавить в библиотеку')
+      await waitFor('document.querySelector(".download-row")?.textContent.includes("В библиотеке")', 'import committed')
+      const [track] = await run('window.musicPlayer.getTracks()')
+      assert.equal(track.title, 'Library title')
+      await writeFile(statePath, JSON.stringify({ id: job.id, trackId: track.id, title: track.title }))
+      return
+    }
     if (phase === 'downloads-restart') {
       const { id, trackId, title } = JSON.parse(await readFile(statePath, 'utf8'))
       const [restored] = await run('window.musicPlayer.downloads.list()')
       assert.deepEqual({ id: restored.id, trackId: restored.trackId, status: restored.status }, { id, trackId, status: 'completed' })
-      const [track] = await run('window.musicPlayer.getTracks()')
+      assert.equal(await run(`window.musicPlayer.downloads.addToLibrary(${JSON.stringify(id)})`), true)
+      const tracks = await run('window.musicPlayer.getTracks()')
+      assert.equal(tracks.length, 1)
+      const [track] = tracks
       assert.deepEqual([track.id, track.title, track.available], [trackId, title, true])
       return
     }
@@ -165,6 +180,7 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
       await waitFor('document.querySelector(".download-cover img")?.naturalWidth > 0', 'Archive.org cover')
     }
     await waitFor('!!document.querySelector(".download-fields input")', 'download metadata editor')
+    assert.match(await run('document.querySelector(".download-metadata").textContent'), /Теги аудиофайла не переписываются/)
     const screenshotPath = !flac && process.env.MUSIC_PLAYER_DOWNLOAD_SCREENSHOTS
     async function screenshot(name) {
       if (screenshotPath) await writeFile(join(screenshotPath, name), (await webContents.capturePage()).toPNG())

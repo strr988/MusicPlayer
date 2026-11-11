@@ -45,6 +45,8 @@ export interface DownloadJob {
   progress?: { bytes: number; total: number | null }
   error?: string
   trackId?: string
+  importing?: boolean
+  canDismiss?: boolean
   coverUrl?: string
   duplicate?: boolean
 }
@@ -54,7 +56,7 @@ export interface DownloadsApi {
   analyze(url: string): Promise<void>
   confirm(id: string, edits: MetadataEdits): Promise<void>
   cancel(id: string): Promise<void>
-  addToLibrary(id: string): Promise<void>
+  addToLibrary(id: string): Promise<boolean>
   reveal(id: string): Promise<void>
   chooseCover(id: string): Promise<string | null>
   dismiss(id: string): Promise<void>

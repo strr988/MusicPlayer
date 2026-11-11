@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { createHash, randomUUID } from 'node:crypto'
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
@@ -87,6 +89,41 @@ test('Downloads validates links and reports the missing tool in Electron', { tim
   const { run } = await prepareElectron(t)
   await run('downloads-offline')
 })
+
+test('an abrupt Electron exit after importing a download preserves the Track ID, SQLite and the original tags',
+  { timeout: 75_000 }, async t => {
+    const { fixtures, profile, run } = await prepareElectron(t)
+    const root = join(profile, 'music-downloads')
+    const id = randomUUID()
+    const audio = await readFile(join(fixtures, '01.mp3'))
+    const manifest = {
+      metadata: {
+        provider: 'archive.org', sourceId: 'fixture/tone.mp3', originalUrl: 'https://archive.org/details/fixture/tone.mp3',
+        title: 'Original title', artist: null, album: null, durationSeconds: 5, artworkUrl: null, audioFormats: ['mp3'],
+        licenseUrl: 'https://creativecommons.org/publicdomain/zero/1.0/', downloadFormat: 'mp3', restriction: null,
+      },
+      edits: { title: 'Library title' },
+      size: audio.length, sha1: createHash('sha1').update(audio).digest('hex'),
+    }
+    for (const name of [id, '.stage-AbC123']) {
+      const path = join(root, name)
+      await mkdir(path, { recursive: true })
+      await writeFile(join(path, 'audio.mp3'), audio)
+      await writeFile(join(path, 'download.json'), JSON.stringify(manifest))
+    }
+    await assert.rejects(run('downloads-recovery-commit'), error => {
+      assert.equal(error.killed, false)
+      assert.match(error.stdout, /download import committed/)
+      return true
+    })
+    await run('downloads-restart')
+    assert.deepEqual(await readdir(root), [id])
+    assert.deepEqual(await readFile(join(root, id, 'audio.mp3')), audio)
+    using db = new DatabaseSync(join(profile, 'library.sqlite3'), { readOnly: true })
+    assert.equal(db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok')
+    assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), [])
+    assert.equal(db.prepare('SELECT count(*) AS count FROM external_recordings').get().count, 1)
+  })
 
 test('Archive.org downloads and plays an authorized original without FFmpeg, then restores the imported Track ID',
   { skip: !process.env.MUSIC_PLAYER_YTDLP_EXE, timeout: 140_000 }, async t => {

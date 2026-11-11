@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { lstat, open, readdir, realpath } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import { basename, extname, isAbsolute, join, relative, sep } from 'node:path'
@@ -17,9 +17,15 @@ interface ScannedFile {
   identity: FileIdentity
 }
 
+export interface DownloadIntegrity {
+  size: number
+  sha1: string
+}
+
 type CompletedImport = Extract<ImportResult, { status: 'complete' }>
 const metadataLimit = 8 * 1024 * 1024
 const metadataOptions = { skipCovers: true, maxMemoryAllocation: metadataLimit, maxMetadataEntries: 10_000 }
+const changedDownload = 'Содержимое загруженного файла изменилось.'
 
 function isWithin(root: string, file: string): boolean {
   const name = relative(root, file)
@@ -84,7 +90,7 @@ export class Library implements ListeningDataReader {
   private readonly store: LibraryStore
   private pendingScan = Promise.resolve()
 
-  constructor(databasePath: string) {
+  constructor(databasePath: string, private readonly downloadsDirectory?: string) {
     this.store = new LibraryStore(databasePath)
   }
 
@@ -127,16 +133,18 @@ export class Library implements ListeningDataReader {
 
   getDownloadCover(trackId: string) { return this.store.getDownloadCover(trackId) }
 
-  async validateDownloadedAudio(path: string, format: AudioFormat): Promise<void> {
-    await this.readFile(path, format)
+  async validateDownloadedAudio(path: string, format: AudioFormat, integrity: DownloadIntegrity, signal: AbortSignal): Promise<void> {
+    await this.readDownloadedFile(path, format, integrity, signal)
   }
 
-  importDownload(path: string, metadata: SourceMetadata, edits: MetadataEdits, cover: Uint8Array | null): Promise<string> {
+  importDownload(path: string, metadata: SourceMetadata, edits: MetadataEdits, cover: Uint8Array | null,
+    integrity: DownloadIntegrity, signal: AbortSignal): Promise<string> {
     const scan = this.pendingScan.then(async () => {
+      signal.throwIfAborted()
       const duplicate = this.getExternalTrackId(metadata)
       if (duplicate) return duplicate
       if (!metadata.downloadFormat) throw new Error('Неподдерживаемый формат.')
-      const file = await this.readFile(path, metadata.downloadFormat)
+      const file = await this.readDownloadedFile(path, metadata.downloadFormat, integrity, signal)
       const existing = this.store.getLocalSources().find(source => source.path === path)
       const track: Track = {
         ...file.tags, id: existing?.trackId ?? randomUUID(),
@@ -146,6 +154,8 @@ export class Library implements ListeningDataReader {
         album: edits.album === undefined ? metadata.album : edits.album,
         durationSeconds: edits.durationSeconds === undefined ? metadata.durationSeconds ?? file.tags.durationSeconds : edits.durationSeconds,
       }
+      // The commit is synchronous. Cancellation is honored up to this boundary.
+      signal.throwIfAborted()
       return this.store.saveDownload({
         track,
         source: {
@@ -212,8 +222,10 @@ export class Library implements ListeningDataReader {
     if (!(await lstat(root)).isDirectory()) throw new Error('Expected an import folder')
     const issues: ImportIssue[] = []
     const files: ScannedFile[] = []
+    const downloads = this.downloadsDirectory && await realpath(this.downloadsDirectory).catch(() => undefined)
 
     const scan = async (directory: string): Promise<void> => {
+      if (downloads && /^\.stage-[a-zA-Z0-9]{6}$/.test(relative(downloads, directory).split(sep)[0])) return
       let entries
       try {
         if (await realpath(directory) !== directory) throw new Error('Directory moved')
@@ -244,11 +256,11 @@ export class Library implements ListeningDataReader {
     }
 
     await scan(root)
-    await this.saveScan(root, files)
+    await this.saveScan(root, files, issues)
     return { status: 'complete', tracks: this.getTracks(), processed: files.length, issues }
   }
 
-  private async saveScan(root: string, files: ScannedFile[]): Promise<void> {
+  private async saveScan(root: string, files: ScannedFile[], issues: ImportIssue[]): Promise<void> {
     const previous = this.store.getLocalSources()
     const byPath = new Map(previous.map((source) => [source.path, source]))
     const byMoveKey = new Map<string, LocalSource | null>()
@@ -274,6 +286,10 @@ export class Library implements ListeningDataReader {
           existing = candidate
         }
       }
+      if (existing && !sameIdentity(existing.identity, file.identity) && this.store.isExternalRecording(existing.trackId)) {
+        issues.push({ entry: relative(root, file.path), reason: 'file-unreadable' })
+        continue
+      }
       if (existing) refreshedSources.add(existing.id)
       const track = { id: existing?.trackId ?? randomUUID(), ...file.tags }
       const source = {
@@ -296,8 +312,37 @@ export class Library implements ListeningDataReader {
     this.store.saveScan(root, entries, availability)
   }
 
-  private async readFile(path: string, format: Track['format']): Promise<ScannedFile> {
+  private async readDownloadedFile(path: string, format: AudioFormat, integrity: DownloadIntegrity, signal: AbortSignal) {
+    signal.throwIfAborted()
     const identity = await lstat(path, { bigint: true })
+    if (identity.size !== BigInt(integrity.size)) throw new Error(changedDownload)
+    const file = await openVerifiedFile({ path, identity })
+    if (!file) throw new Error(changedDownload)
+    try {
+      const hash = createHash('sha1')
+      let size = 0
+      for await (const chunk of file.createReadStream({ autoClose: false, signal })) {
+        size += chunk.length
+        if (size > integrity.size) throw new Error(changedDownload)
+        hash.update(chunk)
+      }
+      if (size !== integrity.size || hash.digest('hex') !== integrity.sha1 ||
+          !sameFile(identity, await file.stat({ bigint: true }))) throw new Error(changedDownload)
+    } finally {
+      await file.close()
+    }
+    signal.throwIfAborted()
+    const scanned = await this.readFile(path, format, identity).catch(error => {
+      if (error.code || error.message === changedDownload) throw error
+      throw new Error('Формат аудио не поддерживается или файл повреждён.')
+    })
+    signal.throwIfAborted()
+    return scanned
+  }
+
+  private async readFile(path: string, format: Track['format'], expected?: FileIdentity): Promise<ScannedFile> {
+    const identity = await lstat(path, { bigint: true })
+    if (expected && !sameFile(expected, identity)) throw new Error(changedDownload)
     if (!identity.isFile() || identity.size === 0n) throw new Error('Invalid file')
 
     const tags = await parseFile(path, metadataOptions).catch(async error => {
@@ -310,7 +355,7 @@ export class Library implements ListeningDataReader {
       throw new Error('Unexpected audio format')
     }
     if (await realpath(path) !== path || !sameFile(identity, await lstat(path, { bigint: true }))) {
-      throw new Error('File changed during import')
+      throw new Error(expected ? changedDownload : 'File changed during import')
     }
 
     const { title, artist, album, genre } = tags.common
