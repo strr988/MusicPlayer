@@ -1,0 +1,5 @@
+allowBuilds:
+  electron: false
+minimumReleaseAgeExclude:
+  - electron@45.3.0
+  - music-metadata@12.4.0

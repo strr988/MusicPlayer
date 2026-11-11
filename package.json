@@ -1,0 +1,36 @@
+{
+  "name": "music-player",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "out/main/index.js",
+  "productName": "Music Player",
+  "packageManager": "pnpm@11.25.0",
+  "engines": { "node": "^24.22.0" },
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "pnpm typecheck && electron-vite build",
+    "start": "electron-vite preview --skipBuild",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:desktop": "pnpm build && node --test tests/desktop.mjs"
+  },
+  "dependencies": {
+    "music-metadata": "12.4.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.3.5",
+    "@types/node": "24.10.1",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.3.0",
+    "electron": "45.3.0",
+    "electron-vite": "6.0.0",
+    "tailwindcss": "4.3.5",
+    "typescript": "6.0.3",
+    "vite": "8.3.7",
+    "vitest": "5.1.0"
+  }
+}
