@@ -136,6 +136,28 @@ test('SoundCloud shows public track metadata, artwork, streams and the original 
     assert.deepEqual(await readdir(join(profile, 'music-downloads')), [])
   })
 
+test('SoundCloud binds an authorized release MP3 to the analyzed track and plays it after restart',
+  { skip: !process.env.MUSIC_PLAYER_YTDLP_EXE || !process.env.MUSIC_PLAYER_SC_SAMPLE, timeout: 190_000 }, async t => {
+    const { fixtures, profile, run } = await prepareElectron(t)
+    const sample = join(fixtures, 'Convergence.mp3')
+    await copyFile(process.env.MUSIC_PLAYER_SC_SAMPLE, sample)
+    const original = await readFile(sample)
+    assert.equal(createHash('sha256').update(original).digest('hex'),
+      'c7fd63d6ad0e8902dbedbb08e7be1770902efb440f8e3896b1beb992ac18c0ae')
+    await mkdir(join(profile, 'tools'), { recursive: true })
+    await copyFile(process.env.MUSIC_PLAYER_YTDLP_EXE, join(profile, 'tools', 'yt-dlp.exe'))
+    await run('downloads-soundcloud-original', 90_000)
+    await run('downloads-soundcloud-restart', 90_000)
+    assert.deepEqual(await readdir(join(profile, 'music-downloads')), [])
+    assert.deepEqual(await readFile(sample), original)
+    using db = new DatabaseSync(join(profile, 'library.sqlite3'), { readOnly: true })
+    assert.equal(db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok')
+    assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), [])
+    const { sourceId, trackId } = JSON.parse(await readFile(join(profile, 'downloads-smoke.json'), 'utf8'))
+    assert.deepEqual(db.prepare('SELECT provider, provider_id, track_id FROM external_recordings').all().map(Object.values),
+      [['soundcloud', sourceId, trackId]])
+  })
+
 test('Archive.org downloads and plays an authorized original without FFmpeg, then restores the imported Track ID',
   archiveLiveOptions, async t => {
     const { profile, run } = await prepareElectron(t)

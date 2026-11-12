@@ -139,24 +139,48 @@ export class Library implements ListeningDataReader {
 
   importDownload(path: string, metadata: SourceMetadata, edits: MetadataEdits, cover: Uint8Array | null,
     integrity: DownloadIntegrity, signal: AbortSignal): Promise<string> {
+    return this.importRecording(metadata, edits, cover, signal, () => {
+      if (!metadata.downloadFormat) throw new Error('Неподдерживаемый формат.')
+      return this.readDownloadedFile(path, metadata.downloadFormat, integrity, signal)
+    })
+  }
+
+  importSoundCloudOriginal(path: string, metadata: SourceMetadata, edits: MetadataEdits, cover: Uint8Array | null,
+    signal: AbortSignal): Promise<string> {
+    if (metadata.provider !== 'soundcloud') throw new Error('Выберите трек SoundCloud.')
+    return this.importRecording(metadata, edits, cover, signal, async () => {
+      const format = extname(path).slice(1).toLowerCase()
+      if (format !== 'mp3' && format !== 'flac') throw new Error('Выберите оригинал в формате MP3 или FLAC.')
+      const identity = await lstat(path, { bigint: true })
+      if (!identity.isFile()) throw new Error('Выберите обычный аудиофайл.')
+      const canonical = await realpath(path)
+      return this.readExternalAudio(canonical, format, identity, true)
+    })
+  }
+
+  private importRecording(metadata: SourceMetadata, edits: MetadataEdits, cover: Uint8Array | null,
+    signal: AbortSignal, read: () => Promise<ScannedFile>): Promise<string> {
     const scan = this.pendingScan.then(async () => {
       signal.throwIfAborted()
       const duplicate = this.getExternalTrackId(metadata)
       if (duplicate) return duplicate
-      if (!metadata.downloadFormat) throw new Error('Неподдерживаемый формат.')
-      const file = await this.readDownloadedFile(path, metadata.downloadFormat, integrity, signal)
+      const file = await read()
+      const { path } = file
       const existing = this.store.getLocalSources().find(source => source.path === path)
+      if (existing && this.store.isExternalRecording(existing.trackId)) {
+        throw new Error('Этот файл уже связан с другой записью внешнего источника.')
+      }
       const track: Track = {
         ...file.tags, id: existing?.trackId ?? randomUUID(),
         title: (edits.title === undefined ? metadata.title : edits.title) ??
-          metadata.sourceId.slice(metadata.sourceId.indexOf('/') + 1),
+          (metadata.provider === 'soundcloud' ? file.tags.title : metadata.sourceId.slice(metadata.sourceId.indexOf('/') + 1)),
         artist: edits.artist === undefined ? metadata.artist : edits.artist,
         album: edits.album === undefined ? metadata.album : edits.album,
         durationSeconds: edits.durationSeconds === undefined ? metadata.durationSeconds ?? file.tags.durationSeconds : edits.durationSeconds,
       }
       // The commit is synchronous. Cancellation is honored up to this boundary.
       signal.throwIfAborted()
-      return this.store.saveDownload({
+      return this.store.saveExternalRecording({
         track,
         source: {
           id: existing && sameIdentity(existing.identity, file.identity) ? existing.id : randomUUID(),
@@ -332,15 +356,19 @@ export class Library implements ListeningDataReader {
       await file.close()
     }
     signal.throwIfAborted()
-    const scanned = await this.readFile(path, format, identity).catch(error => {
-      if (error.code || error.message === changedDownload) throw error
-      throw new Error('Формат аудио не поддерживается или файл повреждён.')
-    })
+    const scanned = await this.readExternalAudio(path, format, identity)
     signal.throwIfAborted()
     return scanned
   }
 
-  private async readFile(path: string, format: Track['format'], expected?: FileIdentity): Promise<ScannedFile> {
+  private readExternalAudio(path: string, format: AudioFormat, identity: FileIdentity, requireAudio = false) {
+    return this.readFile(path, format, identity, requireAudio).catch(error => {
+      if (error.code || error.message === changedDownload) throw error
+      throw new Error('Формат аудио не поддерживается или файл повреждён.')
+    })
+  }
+
+  private async readFile(path: string, format: Track['format'], expected?: FileIdentity, requireAudio = false): Promise<ScannedFile> {
     const identity = await lstat(path, { bigint: true })
     if (expected && !sameFile(expected, identity)) throw new Error(changedDownload)
     if (!identity.isFile() || identity.size === 0n) throw new Error('Invalid file')
@@ -353,6 +381,9 @@ export class Library implements ListeningDataReader {
     const container = tags.format.container?.toLowerCase()
     if (format === 'flac' ? container !== 'flac' : container !== 'mpeg' || !tags.format.codec?.endsWith('Layer 3')) {
       throw new Error('Unexpected audio format')
+    }
+    if (requireAudio && (!((tags.format.sampleRate ?? 0) > 0) || !((tags.format.bitrate ?? 0) > 0))) {
+      throw new Error('Missing audio data')
     }
     if (await realpath(path) !== path || !sameFile(identity, await lstat(path, { bigint: true }))) {
       throw new Error(expected ? changedDownload : 'File changed during import')

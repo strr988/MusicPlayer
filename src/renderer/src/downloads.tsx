@@ -82,6 +82,7 @@ function DownloadRow({ job, onImport }: { job: DownloadJob; onImport: () => Prom
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const { id, status, metadata, edits, progress, duplicate } = job
+  const soundCloud = metadata?.provider === 'soundcloud'
   const cancelable = ['waiting', 'analyzing', 'downloading', 'processing'].includes(status)
   const dismissible = job.canDismiss !== false && ['failed', 'cancelled', 'ready'].includes(status)
   const title = edits?.title === undefined ? metadata?.title : edits.title
@@ -111,8 +112,16 @@ function DownloadRow({ job, onImport }: { job: DownloadJob; onImport: () => Prom
       {progress && <p>{megabytes.format(progress.bytes / 1048576)} МиБ
         {progress.total && ` / ${megabytes.format(progress.total / 1048576)} МиБ`}</p>}
     </>}
-    {status === 'ready' && metadata && <MetadataForm metadata={metadata} coverUrl={job.coverUrl} busy={busy}
-      duplicate={!!duplicate} confirm={value => void act(() => api().confirm(id, value))}
+    {status === 'ready' && metadata && <MetadataForm metadata={metadata} coverUrl={job.coverUrl} busy={busy || !!job.importing}
+      duplicate={!!duplicate} imported={!!job.trackId}
+      openSoundCloud={soundCloud ? () => void act(() => api().openSoundCloud(id)) : undefined}
+      confirm={value => void act(async () => {
+        if (soundCloud) {
+          if (await api().importSoundCloudOriginal(id, value)) await onImport()
+        } else {
+          await api().confirm(id, value)
+        }
+      })}
       chooseCover={async () => {
         let cover: string | null = null
         await act(async () => { cover = await api().chooseCover(id) })
@@ -122,17 +131,17 @@ function DownloadRow({ job, onImport }: { job: DownloadJob; onImport: () => Prom
       <div className="download-actions">
         {!job.trackId && !job.importing && <button type="button" className="primary" disabled={busy}
           onClick={() => void act(async () => { if (await api().addToLibrary(id)) await onImport() })}>Добавить в библиотеку</button>}
-        {job.importing && <>
-          <span role="status">Импорт в библиотеку…</span>
-          <button type="button" className="secondary" onClick={() => {
-            void api().cancel(id).catch(failure => setError(errorText(failure)))
-          }}>Отменить импорт</button>
-        </>}
         {job.trackId && <span>В библиотеке</span>}
         <button type="button" className="secondary" disabled={busy || job.importing} onClick={() => void act(() => api().reveal(id))}>Показать файл</button>
       </div>
       {!job.trackId && <p className="download-provenance">{metadataHint}</p>}
     </>}
+    {job.importing && <div className="download-actions">
+      <span role="status">Импорт в библиотеку…</span>
+      <button type="button" className="secondary" onClick={() => {
+        void api().cancel(id).catch(failure => setError(errorText(failure)))
+      }}>Отменить импорт</button>
+    </div>}
     {status === 'completed' && metadata && <details className="download-provenance">
       <summary>Источник и лицензия</summary>
       <SourceDetails metadata={metadata} />
@@ -141,18 +150,20 @@ function DownloadRow({ job, onImport }: { job: DownloadJob; onImport: () => Prom
   </li>
 }
 
-function MetadataForm({ metadata, coverUrl, duplicate, busy, confirm, chooseCover }: {
+function MetadataForm({ metadata, coverUrl, duplicate, imported, busy, confirm, chooseCover, openSoundCloud }: {
   metadata: SourceMetadata
   coverUrl?: string
   duplicate: boolean
+  imported: boolean
   busy: boolean
   confirm: (value: MetadataEdits) => void
   chooseCover: () => Promise<string | null>
+  openSoundCloud?: () => void
 }) {
   const [edits, setEdits] = useState<MetadataEdits>({})
   const [customCover, setCustomCover] = useState<string | null>(null)
   const image = edits.artwork === 'remove' ? null : edits.artwork === 'custom' ? customCover : coverUrl
-  const editable = !duplicate && metadata.downloadFormat !== null
+  const editable = !duplicate && (openSoundCloud !== undefined || metadata.downloadFormat !== null)
   const duration = edits.durationSeconds === undefined ? metadata.durationSeconds : edits.durationSeconds
   return <form className="download-metadata" onSubmit={event => { event.preventDefault(); confirm(edits) }}>
     <div className="download-cover">
@@ -171,12 +182,12 @@ function MetadataForm({ metadata, coverUrl, duplicate, busy, confirm, chooseCove
     <div className="download-fields">
       {([['title', 'Название'], ['artist', 'Исполнитель'], ['album', 'Альбом']] as const).map(([key, label]) =>
         <label key={key}>{label}
-          <input readOnly={!editable} maxLength={240} placeholder="Нет данных"
+          <input readOnly={!editable || busy} maxLength={240} placeholder="Нет данных"
             value={(edits[key] === undefined ? metadata[key] : edits[key]) ?? ''}
             onChange={event => setEdits(previous => ({ ...previous, [key]: event.target.value }))} />
         </label>)}
       <label>Длительность, с
-        <input readOnly={!editable} type="number" step="any" min="0.01" max="86400" placeholder="Нет данных"
+        <input readOnly={!editable || busy} type="number" step="any" min="0.01" max="86400" placeholder="Нет данных"
           value={duration ?? ''} onChange={event => {
             const value = event.target.valueAsNumber
             setEdits(previous => ({ ...previous, durationSeconds: Number.isFinite(value) ? value : null }))
@@ -184,12 +195,19 @@ function MetadataForm({ metadata, coverUrl, duplicate, busy, confirm, chooseCove
       </label>
     </div>
     <SourceDetails metadata={metadata} />
-    {duplicate && <p className="notice">Эта запись уже есть в библиотеке или менеджере загрузок.</p>}
+    {duplicate && <p className="notice">{imported ? 'В библиотеке' : 'Эта запись уже есть в менеджере загрузок.'}</p>}
     {metadata.restriction && <p className="notice">{metadata.restriction}</p>}
     {editable && <p className="notice">{metadataHint}</p>}
-    {editable && <div className="download-actions"><button className="primary" type="submit" disabled={busy}>
-      <Icon name="download" />Скачать оригинал {metadata.downloadFormat?.toUpperCase()}
-    </button></div>}
+    {openSoundCloud && editable && <p className="notice">Скачайте оригинал на сайте SoundCloud, затем выберите его здесь.
+      Поддерживаются MP3 и FLAC. Файл останется в выбранной папке.</p>}
+    {(openSoundCloud || editable) && <div className="download-actions">
+      {openSoundCloud && <button className="secondary" type="button" disabled={busy}
+        onClick={openSoundCloud}>Открыть на SoundCloud</button>}
+      {editable && <button className="primary" type="submit" disabled={busy}>
+        <Icon name="download" />{openSoundCloud ? 'Импортировать скачанный оригинал' :
+          `Скачать оригинал ${metadata.downloadFormat?.toUpperCase()}`}
+      </button>}
+    </div>}
   </form>
 }
 

@@ -95,7 +95,8 @@ export class DownloadManager {
   private readonly prepared: Promise<boolean>
 
   constructor(private readonly profile: string, private readonly providers: readonly MusicSourceProvider[],
-    private readonly library: Pick<Library, 'getExternalTrackId' | 'validateDownloadedAudio' | 'importDownload'>) {
+    private readonly library: Pick<Library, 'getExternalTrackId' | 'validateDownloadedAudio' | 'importDownload' |
+      'importSoundCloudOriginal'>) {
     this.prepared = this.prepare().then(() => true, () => false)
   }
 
@@ -158,7 +159,8 @@ export class DownloadManager {
       const { status, metadata } = job.snapshot
       if (status !== 'ready' || !metadata) return { ...job.snapshot, importing: !!job.importing }
       const trackId = this.library.getExternalTrackId(metadata)
-      return { ...job.snapshot, trackId, duplicate: trackId !== undefined || this.hasDownload(job, metadata) }
+      return { ...job.snapshot, trackId, importing: !!job.importing,
+        duplicate: trackId !== undefined || this.hasDownload(job, metadata) }
     })
   }
 
@@ -247,8 +249,7 @@ export class DownloadManager {
     if (this.library.getExternalTrackId(analysis.metadata) || this.hasDownload(job, analysis.metadata)) {
       throw new Error('Эта запись уже есть в библиотеке или менеджере загрузок.')
     }
-    if (edits.artwork === 'custom' && !job.customCover) throw new Error('Выберите файл обложки.')
-    job.selectedCover = edits.artwork === 'remove' ? null : edits.artwork === 'custom' ? job.customCover! : analysis.cover
+    job.selectedCover = this.importCover(job, analysis, edits)
     job.snapshot.edits = edits
     job.snapshot.status = 'waiting'
     this.enqueue(job, () => this.download(job, analysis))
@@ -304,7 +305,7 @@ export class DownloadManager {
 
   dismiss(id: string): void {
     const job = this.get(id)
-    if (job.snapshot.canDismiss === false || !['failed', 'cancelled', 'ready'].includes(job.snapshot.status)) {
+    if (job.importing || job.snapshot.canDismiss === false || !['failed', 'cancelled', 'ready'].includes(job.snapshot.status)) {
       throw new Error('Эту задачу нельзя закрыть.')
     }
     this.cancel(id)
@@ -313,10 +314,10 @@ export class DownloadManager {
 
   async setCover(id: string, path: string): Promise<string> {
     const job = this.get(id)
-    if (job.snapshot.status !== 'ready') throw new Error('Изменение обложки недоступно.')
+    if (job.snapshot.status !== 'ready' || job.importing) throw new Error('Изменение обложки недоступно.')
     const cover = await boundedFile(await realpath(path), maxImageBytes)
     if (!artworkMime(cover)) throw new Error('Выберите статичный PNG или JPEG до 2 МиБ и 2048 × 2048.')
-    if (job.snapshot.status !== 'ready') throw new Error('Изменение обложки недоступно.')
+    if (job.snapshot.status !== 'ready' || job.importing) throw new Error('Изменение обложки недоступно.')
     job.customCover = cover
     return `${playerOrigin}/download-artwork/${id}/custom`
   }
@@ -340,11 +341,46 @@ export class DownloadManager {
   addToLibrary(id: string): Promise<boolean> {
     if (this.stopped) throw new Error('Приложение закрывается.')
     const job = this.get(id)
+    if (job.snapshot.status !== 'completed') throw new Error('Загруженный файл недоступен.')
+    return this.startImport(job, async signal => {
+      const path = await this.file(id)
+      return this.library.importDownload(path, job.snapshot.metadata!, job.snapshot.edits ?? {},
+        job.selectedCover ?? null, job.integrity!, signal)
+    })
+  }
+
+  soundCloudRecording(id: string): { metadata: SourceMetadata; trackId: string | undefined } {
+    if (this.stopped) throw new Error('Приложение закрывается.')
+    const { analysis, snapshot, provider, link } = this.get(id)
+    if (snapshot.status !== 'ready' || provider.id !== 'soundcloud' || analysis?.metadata.provider !== 'soundcloud' ||
+        !provider.matchesRecording(analysis.metadata.sourceId, link)) {
+      throw new Error('Сначала проанализируйте трек SoundCloud.')
+    }
+    return { metadata: analysis.metadata, trackId: this.library.getExternalTrackId(analysis.metadata) }
+  }
+
+  async importSoundCloudOriginal(id: string, path: string, edits: MetadataEdits): Promise<boolean> {
+    const { metadata, trackId } = this.soundCloudRecording(id)
+    const job = this.get(id)
+    if (trackId) return false
+    const cover = this.importCover(job, job.analysis!, edits)
+    return this.startImport(job, async signal => {
+      const trackId = await this.library.importSoundCloudOriginal(path, metadata, edits, cover, signal)
+      job.snapshot.edits = edits
+      return trackId
+    })
+  }
+
+  private importCover(job: Job, analysis: Analysis, edits: MetadataEdits): Buffer | null {
+    if (edits.artwork === 'custom' && !job.customCover) throw new Error('Выберите файл обложки.')
+    return edits.artwork === 'remove' ? null : edits.artwork === 'custom' ? job.customCover! : analysis.cover
+  }
+
+  private startImport(job: Job, run: (signal: AbortSignal) => Promise<string>): Promise<boolean> {
     if (job.importing) return job.importing.completion
     const controller = new AbortController()
-    const completion = this.file(id).then(async path => {
-      job.snapshot.trackId = await this.library.importDownload(path, job.snapshot.metadata!,
-        job.snapshot.edits ?? {}, job.selectedCover ?? null, job.integrity!, controller.signal)
+    const completion = run(controller.signal).then(trackId => {
+      job.snapshot.trackId = trackId
       return true
     }).catch(error => {
       if (controller.signal.aborted) return false

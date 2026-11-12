@@ -7,6 +7,8 @@ export const downloadChannels = {
   reveal: 'downloads:reveal',
   chooseCover: 'downloads:choose-cover',
   dismiss: 'downloads:dismiss',
+  openSoundCloud: 'downloads:open-soundcloud',
+  importSoundCloudOriginal: 'downloads:import-soundcloud-original',
 } as const
 
 export type AudioFormat = 'mp3' | 'flac'
@@ -63,4 +65,6 @@ export interface DownloadsApi {
   reveal(id: string): Promise<void>
   chooseCover(id: string): Promise<string | null>
   dismiss(id: string): Promise<void>
+  openSoundCloud(id: string): Promise<void>
+  importSoundCloudOriginal(id: string, edits: MetadataEdits): Promise<boolean>
 }

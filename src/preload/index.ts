@@ -13,6 +13,8 @@ const api: MusicPlayerApi = {
     reveal: id => ipcRenderer.invoke(downloadChannels.reveal, id),
     chooseCover: id => ipcRenderer.invoke(downloadChannels.chooseCover, id),
     dismiss: id => ipcRenderer.invoke(downloadChannels.dismiss, id),
+    openSoundCloud: id => ipcRenderer.invoke(downloadChannels.openSoundCloud, id),
+    importSoundCloudOriginal: (id, edits) => ipcRenderer.invoke(downloadChannels.importSoundCloudOriginal, id, edits),
   },
   getWaveQueue: () => ipcRenderer.invoke(channels.getWaveQueue),
   getWaveRecommendations: () => ipcRenderer.invoke(channels.getWaveRecommendations),

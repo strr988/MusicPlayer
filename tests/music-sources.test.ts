@@ -257,9 +257,13 @@ test('dispatches both sources through one queue and preserves provider-scoped Tr
     const signal = new AbortController().signal
     const integrity = { size: audioBytes.length, sha1 }
     const archiveFile = join(directory, 'archive.mp3')
-    const soundCloudFile = join(directory, 'soundcloud.mp3')
+    const selectedFolder = join(directory, 'selected')
+    await mkdir(selectedFolder)
+    const soundCloudFile = join(selectedFolder, 'soundcloud.flac')
+    const flac = await readFile(new URL('./fixtures/02-tone.flac', import.meta.url))
     await copyFile(audio, archiveFile)
-    await copyFile(audio, soundCloudFile)
+    await writeFile(soundCloudFile, flac)
+    const [local] = (await library.importFolder(selectedFolder)).tracks
     // Local bytes are synthetic. This exercises library identity without pretending SoundCloud granted a download.
     const archiveId = await library.importDownload(archiveFile, { ...analysis.metadata, sourceId: soundCloudCli.id },
       {}, null, integrity, signal)
@@ -267,21 +271,68 @@ test('dispatches both sources through one queue and preserves provider-scoped Tr
     await vi.waitFor(async () => expect((await manager.list())[0]).toMatchObject({
       status: 'ready', duplicate: false, metadata: { provider: 'soundcloud', sourceId: soundCloudCli.id },
     }))
-    await expect(manager.confirm((await manager.list())[0].id, {})).rejects.toThrow('недоступна')
+    const [{ id: soundCloudJob }] = await manager.list()
+    await expect(manager.confirm(soundCloudJob, {})).rejects.toThrow('недоступна')
     await manager.analyze(url)
     await vi.waitFor(async () => expect((await manager.list()).map(job => job.metadata?.provider))
       .toEqual(['archive.org', 'soundcloud']))
-    const recording = { ...soundCloud.metadata, downloadFormat: 'mp3' as const }
-    const soundCloudId = await library.importDownload(soundCloudFile, recording, {}, null, integrity, signal)
+    const [{ id: archiveJob }] = await manager.list()
+    expect(() => manager.soundCloudRecording(archiveJob)).toThrow('SoundCloud')
+    await expect(manager.importSoundCloudOriginal(soundCloudJob, archiveFile, {})).rejects.toThrow('уже связан')
+    const mislabeled = join(directory, 'renamed.mp3')
+    await writeFile(mislabeled, flac)
+    await expect(manager.importSoundCloudOriginal(soundCloudJob, mislabeled, {})).rejects.toThrow('повреждён')
+    await writeFile(mislabeled, 'broken')
+    await expect(manager.importSoundCloudOriginal(soundCloudJob, mislabeled, {})).rejects.toThrow('повреждён')
+    await expect(manager.importSoundCloudOriginal(soundCloudJob, join(directory, 'original.wav'), {}))
+      .rejects.toThrow('MP3 или FLAC')
+    expect(library.getExternalTrackId(soundCloud.metadata)).toBeUndefined()
+
+    const reading = latch()
+    const resume = latch()
+    const parser = vi.mocked(parseFile).getMockImplementation()!
+    vi.mocked(parseFile).mockImplementationOnce(async (...args) => {
+      reading.resolve()
+      await resume.promise
+      return parser(...args)
+    })
+    const cancelled = manager.importSoundCloudOriginal(soundCloudJob, soundCloudFile, { title: 'Discard this edit' })
+    await reading.promise
+    try {
+      expect((await manager.list()).find(job => job.id === soundCloudJob)?.importing).toBe(true)
+      expect(() => manager.dismiss(soundCloudJob)).toThrow('нельзя закрыть')
+      manager.cancel(soundCloudJob)
+    } finally {
+      resume.resolve()
+    }
+    await expect(cancelled).resolves.toBe(false)
+    expect(library.getExternalTrackId(soundCloud.metadata)).toBeUndefined()
+
+    const edits = { title: 'Local edit', artist: 'Edited artist', album: null }
+    await expect(manager.importSoundCloudOriginal(soundCloudJob, soundCloudFile, edits)).resolves.toBe(true)
+    const soundCloudId = library.getExternalTrackId(soundCloud.metadata)
+    expect(soundCloudId).toBe(local.id)
     expect(soundCloudId).not.toBe(archiveId)
     await manager.stop()
     library.close()
     library = new Library(dbPath)
     manager = new DownloadManager(directory, [archive, adapter], library)
-    await expect(library.importDownload(soundCloudFile, recording, {}, null, integrity, signal)).resolves.toBe(soundCloudId)
     await manager.analyze(soundCloudUrl)
     await vi.waitFor(async () => expect((await manager.list())[0]).toMatchObject({ duplicate: true, trackId: soundCloudId }))
+    const [{ id: repeated }] = await manager.list()
+    await expect(manager.importSoundCloudOriginal(repeated, mislabeled, { title: 'Unwanted edit' })).resolves.toBe(false)
+    await library.importFolder(selectedFolder)
     expect(library.getTracks()).toHaveLength(2)
+    expect(library.getTracks().find(track => track.id === soundCloudId)).toMatchObject({
+      ...edits, available: true, format: 'flac',
+    })
+    expect(await readFile(soundCloudFile)).toEqual(flac)
+    using db = new DatabaseSync(dbPath, { readOnly: true })
+    expect(db.prepare('PRAGMA integrity_check').get()?.integrity_check).toBe('ok')
+    expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+    const row = db.prepare('SELECT metadata, edits FROM external_recordings WHERE track_id = ?').get(soundCloudId!)
+    expect(JSON.parse(String(row?.metadata))).toEqual(soundCloud.metadata)
+    expect(JSON.parse(String(row?.edits))).toEqual(edits)
   } finally {
     await manager.stop()
     library.close()

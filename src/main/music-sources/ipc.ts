@@ -1,8 +1,9 @@
 import { dialog, ipcMain, shell } from 'electron'
 import type { BrowserWindow, IpcMainInvokeEvent } from 'electron'
 import { downloadChannels } from '../../shared/music-sources'
-import { downloadIdPattern } from './download-manager'
+import { downloadIdPattern, metadataEdits } from './download-manager'
 import type { DownloadManager } from './download-manager'
+import { soundCloudLink } from './soundcloud'
 
 function downloadId(value: unknown): string {
   if (typeof value !== 'string' || value.length !== 36 || !downloadIdPattern.test(value)) {
@@ -26,6 +27,31 @@ export function registerDownloadIpc(manager: DownloadManager, senderWindow: (eve
   handle(downloadChannels.cancel, 1, (_owner, [id]) => manager.cancel(downloadId(id)))
   handle(downloadChannels.dismiss, 1, (_owner, [id]) => manager.dismiss(downloadId(id)))
   handle(downloadChannels.addToLibrary, 1, (_owner, [id]) => manager.addToLibrary(downloadId(id)))
+  handle(downloadChannels.openSoundCloud, 1, async (_owner, [input]) => {
+    const { metadata: { originalUrl } } = manager.soundCloudRecording(downloadId(input))
+    await shell.openExternal(soundCloudLink(originalUrl).url).catch(() => {
+      throw new Error('Не удалось открыть трек в браузере.')
+    })
+  })
+  let choosingOriginal = false
+  handle(downloadChannels.importSoundCloudOriginal, 2, async (owner, [input, value]) => {
+    const id = downloadId(input)
+    const edits = metadataEdits(value)
+    const { trackId } = manager.soundCloudRecording(id)
+    if (trackId || choosingOriginal) return false
+    choosingOriginal = true
+    try {
+      const selection = await dialog.showOpenDialog(owner, {
+        title: 'Выберите скачанный оригинал SoundCloud',
+        filters: [{ name: 'MP3 и FLAC', extensions: ['mp3', 'flac'] }],
+        properties: ['openFile'],
+      }).catch(() => { throw new Error('Не удалось открыть диалог выбора аудиофайла.') })
+      if (selection.canceled || !selection.filePaths[0]) return false
+      return await manager.importSoundCloudOriginal(id, selection.filePaths[0], edits)
+    } finally {
+      choosingOriginal = false
+    }
+  })
   handle(downloadChannels.reveal, 1, async (_owner, [input]) => {
     const id = downloadId(input)
     const path = await manager.file(id).catch(() => { throw new Error('Загруженный файл недоступен.') })

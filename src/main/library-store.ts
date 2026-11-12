@@ -351,7 +351,7 @@ export class LibraryStore implements ListeningDataReader {
     return this.db.prepare('SELECT 1 FROM external_recordings WHERE track_id = ?').get(trackId) !== undefined
   }
 
-  saveDownload(entry: ScanEntry, metadata: SourceMetadata, edits: MetadataEdits, cover: Uint8Array | null): string {
+  saveExternalRecording(entry: ScanEntry, metadata: SourceMetadata, edits: MetadataEdits, cover: Uint8Array | null): string {
     return this.transaction(() => {
       const existing = this.getExternalTrackId(metadata.provider, metadata.sourceId)
       if (existing) return existing

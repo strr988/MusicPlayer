@@ -3,7 +3,7 @@ import { readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
-import { app, BrowserWindow, dialog } from 'electron'
+import { app, BrowserWindow, dialog, shell } from 'electron'
 import { verifyInterface } from './interface-smoke.mjs'
 
 async function eventually(check, label, timeout = 8_000) {
@@ -112,7 +112,8 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
         hasDownloads ? ['downloads'] : []).sort()
   if (phase.startsWith('downloads-')) {
     assert.deepEqual(await run('Object.keys(window.musicPlayer.downloads).sort()'),
-      ['addToLibrary', 'analyze', 'cancel', 'chooseCover', 'confirm', 'dismiss', 'list', 'reveal'])
+      ['addToLibrary', 'analyze', 'cancel', 'chooseCover', 'confirm', 'dismiss', 'importSoundCloudOriginal',
+        'list', 'openSoundCloud', 'reveal'])
     await click('Загрузки')
     await waitFor('document.querySelector(".downloads h1")?.innerText === "Загрузки"', 'Downloads section')
     const statePath = join(profile, 'downloads-smoke.json')
@@ -133,6 +134,72 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
       await waitFor('document.querySelector(".download-cover img")?.naturalWidth > 0', 'SoundCloud artwork')
       assert.match(await run('document.querySelector(".download-row").textContent'), /войдите в аккаунт/)
       assert.equal(await run(`${buttons}.some(button => button.getClientRects().length && button.textContent.includes('Скачать оригинал'))`), false)
+      return
+    }
+    if (phase === 'downloads-soundcloud-original' || phase === 'downloads-soundcloud-restart') {
+      const url = 'https://soundcloud.com/scottbuckley/convergence-cc-by'
+      const title = 'Convergence (library edit)'
+      await setInput('.download-form input', url + '?utm_source=clipboard')
+      await click('Анализировать ссылку')
+      const job = await eventually(async () => {
+        const [job] = await run('window.musicPlayer.downloads.list()')
+        if (job?.status === 'failed') throw new Error(job.error)
+        return job?.status === 'ready' && job
+      }, 'authorized SoundCloud release analysis', 75_000)
+      assert.match(job.metadata.title, /Convergence/i)
+      assert.match(job.metadata.sourceId, /^\d+$/)
+      assert.equal(job.metadata.originalUrl, url)
+      assert.equal(job.metadata.downloadFormat, null)
+      const importAction = `window.musicPlayer.downloads.importSoundCloudOriginal(${JSON.stringify(job.id)}, {})`
+      const tracks = () => run('window.musicPlayer.getTracks()')
+      if (phase === 'downloads-soundcloud-restart') {
+        const previous = JSON.parse(await readFile(statePath, 'utf8'))
+        assert.equal(job.metadata.sourceId, previous.sourceId)
+        assert.equal(job.duplicate, true)
+        assert.equal(job.trackId, previous.trackId)
+        dialog.showOpenDialog = async () => assert.fail('Duplicate import opened a file dialog')
+        assert.equal(await run(importAction), false)
+        const [track] = await tracks()
+        assert.deepEqual([track.id, track.title, track.available], [previous.trackId, title, true])
+        assert.equal((await tracks()).length, 1)
+      } else {
+        const opened = []
+        shell.openExternal = async target => { opened.push(target) }
+        await waitFor(`${buttons}.some(button => button.textContent === 'Открыть на SoundCloud')`, 'SoundCloud controls')
+        await assert.rejects(run('window.musicPlayer.downloads.openSoundCloud("https://example.com")'),
+          error => error.cause.message.includes('Некорректный ID'))
+        assert.deepEqual(opened, [])
+        await click('Открыть на SoundCloud')
+        await eventually(() => opened.length, 'browser open request')
+        assert.deepEqual(opened, [url])
+        assert.equal(webContents.getURL(), 'music-player://app/')
+        assert.match(await run('document.querySelector(".download-row").textContent'), /Теги аудиофайла не переписываются/)
+        dialog.showOpenDialog = async () => ({ canceled: true, filePaths: [] })
+        assert.equal(await run(importAction), false)
+        assert.deepEqual(await tracks(), [])
+        dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [join(folder, 'broken.mp3')] })
+        await assert.rejects(run(importAction), error => error.cause.message.includes('файл повреждён'))
+        assert.deepEqual(await tracks(), [])
+        dialog.showOpenDialog = async (_owner, options) => {
+          assert.deepEqual(options.properties, ['openFile'])
+          assert.deepEqual(options.filters[0].extensions, ['mp3', 'flac'])
+          return { canceled: false, filePaths: [join(folder, 'Convergence.mp3')] }
+        }
+        await setInput('.download-fields input', title)
+        await click('Импортировать скачанный оригинал')
+        await waitFor('document.querySelector(".download-row")?.textContent.includes("В библиотеке")', 'original imported')
+        const [track] = await tracks()
+        assert.equal(track.title, title)
+        assert.equal(track.format, 'mp3')
+        await writeFile(statePath, JSON.stringify({ trackId: track.id, sourceId: job.metadata.sourceId }))
+      }
+      await click('Библиотека')
+      await waitFor(`document.querySelector(".track-button")?.textContent.includes(${JSON.stringify(title)})`, 'SoundCloud track row')
+      if (phase === 'downloads-soundcloud-original') await click('Без звука')
+      const audioStart = await run('document.querySelector("audio").currentTime')
+      await click(title)
+      await waitFor(`!document.querySelector("audio").paused && document.querySelector("audio").currentTime > ${audioStart + 0.2}`,
+        'SoundCloud library file plays')
       return
     }
     if (phase === 'downloads-recovery-commit') {
