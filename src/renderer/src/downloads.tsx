@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { DownloadJob, DownloadStatus, MetadataEdits, SourceMetadata } from '../../shared/music-sources'
 import { sourceNames } from '../../shared/music-sources'
 import { Icon } from './icons'
+import { ModuleFeedback, useYtDlp } from './module-settings'
 
 const statusLabel: Record<DownloadStatus, string> = {
   waiting: 'Ожидает', analyzing: 'Анализируется', ready: 'Готова к загрузке',
@@ -18,7 +19,11 @@ const api = () => window.musicPlayer.downloads
 const megabytes = new Intl.NumberFormat('ru', { maximumFractionDigits: 1 })
 const metadataHint = 'Правки метаданных сохраняются в библиотеке Music Player. Теги аудиофайла не переписываются.'
 
-export function Downloads({ active, onImport }: { active: boolean; onImport: () => Promise<void> }) {
+export function Downloads({ active, onImport, openSettings }: {
+  active: boolean; onImport: () => Promise<void>; openSettings: () => void
+}) {
+  const module = useYtDlp(active)
+  const moduleState = module.status?.state
   const [jobs, setJobs] = useState<DownloadJob[]>([])
   const [url, setUrl] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -62,12 +67,26 @@ export function Downloads({ active, onImport }: { active: boolean; onImport: () 
     <header className="section-heading">
       <div><h1>Загрузки</h1><p>Публичные записи Archive.org и SoundCloud</p></div>
     </header>
+    {moduleState === 'installed' && module.busy && <ModuleFeedback module={module} />}
+    {!moduleState && module.error && <p className="notice" role="alert">{module.error}</p>}
+    {moduleState && moduleState !== 'installed' && <article className="module-card download-module">
+      <h2>{moduleState === 'missing' ? 'Установите yt-dlp для анализа ссылок' :
+        moduleState === 'damaged' ? 'Модуль yt-dlp требует внимания' : 'Анализ ссылок недоступен'}</h2>
+      {moduleState === 'missing' && <p>Music Player скачает и проверит модуль. Можно заранее вставить ссылку ниже.</p>}
+      {moduleState === 'unsupported' && <p>Модуль доступен на Windows x64.</p>}
+      <ModuleFeedback module={module} />
+      {moduleState !== 'unsupported' && <div className="download-actions module-actions">
+        {moduleState === 'missing' && <button type="button" className="primary" disabled={module.busy}
+          onClick={() => void module.act('install')}>Установить модуль</button>}
+        <button type="button" className="secondary" onClick={openSettings}>Открыть настройки</button>
+      </div>}
+    </article>}
     <form className="download-form" onSubmit={event => { event.preventDefault(); void analyze() }}>
       <label>Ссылка на запись
         <input value={url} onChange={event => setUrl(event.target.value)} type="url" required maxLength={2048}
           placeholder="Ссылка Archive.org или SoundCloud" />
       </label>
-      <button className="primary" type="submit" disabled={submitting || !url.trim()}>
+      <button className="primary" type="submit" disabled={submitting || !url.trim() || moduleState !== 'installed' || module.busy}>
         <Icon name="search" />Анализировать ссылку
       </button>
     </form>

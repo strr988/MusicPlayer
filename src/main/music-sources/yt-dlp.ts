@@ -1,13 +1,11 @@
 import { spawn } from 'node:child_process'
-import { createHash } from 'node:crypto'
-import { lstat, open, writeFile } from 'node:fs/promises'
+import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
-export const ytDlpVersion = '2026.10.26'
-const digest = 'f5389d3698ecde4ef06f4e6b1ce0294fe9ac1396228c8990b8d3416d6d177a7d'
+export type LoadYtDlp = () => Promise<{ content: Buffer; version: string; reportFailure?: () => void }>
 
-export function checkVersion(value: string): void {
-  if (value.trim() !== ytDlpVersion) throw new Error(`Требуется yt-dlp ${ytDlpVersion}.`)
+export function checkVersion(value: string, expected: string): void {
+  if (value.trim() !== expected) throw new Error(`Запущенный yt-dlp не соответствует версии ${expected}.`)
 }
 
 export function ytDlpProcessError(stderr: string): Error {
@@ -71,30 +69,18 @@ function run(executable: string, args: string[], directory: string, signal: Abor
   })
 }
 
-export async function verifiedYtDlp(binary: string, directory: string, signal: AbortSignal) {
-  const file = await lstat(binary).catch(error => {
-    if (error.code === 'ENOENT') throw new Error(`Поместите официальный yt-dlp ${ytDlpVersion} в Music Player\\tools\\yt-dlp.exe.`)
-    throw error
-  })
-  if (!file.isFile() || file.size > 32 * 1024 * 1024) throw new Error('Некорректный файл yt-dlp.exe.')
-  const executableFile = await open(binary, 'r')
-  const content = Buffer.alloc(file.size)
-  try {
-    const { bytesRead } = await executableFile.read(content, 0, content.length, 0)
-    if (bytesRead !== file.size || (await executableFile.stat()).size !== file.size) {
-      throw new Error('Файл yt-dlp изменился при проверке.')
-    }
-  } finally {
-    await executableFile.close()
-  }
-  if (createHash('sha256').update(content).digest('hex') !== digest) {
-    throw new Error(`SHA-256 yt-dlp не совпадает с официальным релизом ${ytDlpVersion}.`)
-  }
+export async function prepareYtDlp(load: LoadYtDlp, directory: string, signal: AbortSignal) {
+  const { content, version, reportFailure } = await load()
   const executable = join(directory, 'yt-dlp.exe')
   await writeFile(executable, content, { flag: 'wx', signal })
   const defaults = ['--ignore-config', '--no-plugin-dirs', '--no-cache-dir', '--no-js-runtimes',
     '--no-remote-components', '--no-cookies', '--no-cookies-from-browser', '--encoding', 'utf-8']
-  checkVersion((await run(executable, [...defaults, '--version'], directory, signal)).stdout)
+  try {
+    checkVersion((await run(executable, [...defaults, '--version'], directory, signal)).stdout, version)
+  } catch (error) {
+    if (!signal.aborted) reportFailure?.()
+    throw error
+  }
   return (url: string, proxy: string, extractor: 'archive.org' | 'soundcloud') => run(executable, [
     ...defaults, '--proxy', proxy, '--use-extractors', extractor, '--skip-download', '--dump-single-json',
     ...(extractor === 'archive.org' ? ['--playlist-items', '1:2'] : ['--ignore-no-formats-error']),

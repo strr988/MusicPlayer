@@ -5,7 +5,8 @@ import { pipeline } from 'node:stream/promises'
 import type { DownloadJob } from '../../shared/music-sources'
 import { artworkMime, maxImageBytes } from '../artwork'
 import { archiveResponse, readBounded, validateArchiveEndpoint, withSourceProxy } from './network'
-import { verifiedYtDlp } from './yt-dlp'
+import { prepareYtDlp } from './yt-dlp'
+import type { LoadYtDlp } from './yt-dlp'
 import { label, maxAudioBytes, object, parseJson } from './provider'
 import type { Analysis, MusicSourceProvider, OriginalFile, SourceLink } from './provider'
 
@@ -142,7 +143,7 @@ export class YtDlpProvider implements MusicSourceProvider {
   readonly id = 'archive.org' as const
   readonly hosts = ['archive.org', 'www.archive.org']
 
-  constructor(private readonly binary: string) {}
+  constructor(private readonly load: LoadYtDlp) {}
 
   recognize = archiveLink
 
@@ -153,7 +154,7 @@ export class YtDlpProvider implements MusicSourceProvider {
 
   async analyze(input: SourceLink, directory: string, signal: AbortSignal): Promise<Analysis> {
     const link = archiveLink(input.url)
-    const analyze = await verifiedYtDlp(this.binary, directory, signal)
+    const analyze = await prepareYtDlp(this.load, directory, signal)
     const { stdout } = await withSourceProxy(['archive.org'], proxy => analyze(link.url, proxy, 'archive.org'))
     const result = normalizeArchive(link, stdout, await metadataResponse(link, signal))
     const cover = await coverImage(link, signal).catch(() => null)

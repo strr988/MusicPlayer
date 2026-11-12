@@ -11,7 +11,7 @@ import type { MetadataEdits } from '../src/shared/music-sources'
 import { DownloadManager, metadataEdits } from '../src/main/music-sources/download-manager'
 import { publicAddress, validateArchiveEndpoint, withSourceProxy } from '../src/main/music-sources/network'
 import { normalizeSoundCloud, soundCloudLink, validateSoundCloudArtwork } from '../src/main/music-sources/soundcloud'
-import { checkVersion, verifiedYtDlp, ytDlpProcessError, ytDlpVersion } from '../src/main/music-sources/yt-dlp'
+import { checkVersion, ytDlpProcessError } from '../src/main/music-sources/yt-dlp'
 import { request } from 'node:http'
 import { createHash } from 'node:crypto'
 import { parseFile } from 'music-metadata'
@@ -191,15 +191,9 @@ test('network policy denies private DNS results and unapproved redirect destinat
   }))
 })
 
-test('reports a missing executable, rejects other hashes and versions', async () => {
-  const dir = await profile()
-  const binary = join(dir, 'external.exe')
-  const signal = new AbortController().signal
-  await expect(verifiedYtDlp(binary, dir, signal)).rejects.toThrow(ytDlpVersion)
-  await writeFile(binary, 'wrong bytes')
-  await expect(verifiedYtDlp(binary, dir, signal)).rejects.toThrow('SHA-256')
-  expect(() => checkVersion(ytDlpVersion + '\n')).not.toThrow()
-  expect(() => checkVersion('2026.11.04.232659')).toThrow(ytDlpVersion)
+test('checks that the executable reports the version of its release', () => {
+  expect(() => checkVersion('2026.10.26\n', '2026.10.26')).not.toThrow()
+  expect(() => checkVersion('2026.11.04.232659', '2026.10.26')).toThrow('2026.10.26')
 })
 
 test('does not confuse the intentionally disabled FFmpeg warning with a yt-dlp failure', () => {

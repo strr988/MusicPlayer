@@ -47,6 +47,7 @@ try {
   const appDir = join(packageDir, 'resources', 'app')
   await mkdir(appDir)
   await writeFile(join(appDir, 'package.json'), JSON.stringify({ name, productName, version, type, main }, null, 2) + '\n')
+  await cp(join(root, 'LICENSE'), join(appDir, 'LICENSE'))
   await cp(join(root, 'out'), join(appDir, 'out'), { recursive: true })
 
   const depsDir = join(staging, 'dependencies')
@@ -71,6 +72,20 @@ try {
     await cp(join(root, 'tests', 'fixtures', file), join(demo, file))
   }
   await cp(join(root, 'docs', 'WINDOWS_RELEASE.md'), join(packageDir, 'DEMO.md'))
+  for (const file of ['YT_DLP_INTEGRATION.md', 'MUSIC_SOURCES.md']) {
+    await cp(join(root, 'docs', file), join(packageDir, file))
+  }
+  const openPgpSource = `openpgpjs-${manifest.dependencies.openpgp}-source.tar.gz`
+  const source = join(releasePath, 'third-party-sources', openPgpSource)
+  const sourceFile = await lstat(source).catch(error => {
+    if (error.code !== 'ENOENT') throw error
+    return null
+  })
+  if (sourceFile?.isFile()) {
+    const licenses = join(packageDir, 'Third-party sources')
+    await mkdir(licenses)
+    await cp(source, join(licenses, openPgpSource))
+  }
 
   const archive = join(staging, zipName)
   execFileSync(tar, ['-a', '-cf', archive, '-C', staging, appFolder], { stdio: 'inherit' })

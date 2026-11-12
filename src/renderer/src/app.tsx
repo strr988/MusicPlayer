@@ -9,12 +9,14 @@ import { Playlists } from './playlists'
 import { QueuePanel } from './queue-panel'
 import { Wave } from './wave'
 import { Downloads } from './downloads'
+import { ModuleSettings } from './module-settings'
 
 const sections = [
   { id: 'library', label: 'Библиотека', icon: 'library' },
   { id: 'wave', label: 'Моя волна', icon: 'wave' },
   { id: 'playlists', label: 'Плейлисты', icon: 'playlists' },
   { id: 'downloads', label: 'Загрузки', icon: 'download' },
+  { id: 'settings', label: 'Настройки', icon: 'settings' },
 ] as const
 type Section = typeof sections[number]['id']
 
@@ -182,6 +184,7 @@ export function App() {
       <nav className="section-nav" aria-label="Разделы" inert={covered}>
         <span className="brand-mark" aria-hidden="true"><Icon name="music" /></span>
         {sections.map(item => <button key={item.id} ref={item.id === "library" ? libraryLink : undefined} type="button" aria-label={item.label} title={item.label}
+          className={item.id === 'settings' ? 'settings-link' : undefined}
           aria-current={section === item.id ? 'page' : undefined} onClick={() => openSection(item.id)}
           disabled={item.id === 'playlists' && (libraryLoading || importing)}>
           <Icon name={item.icon} /><span>{item.label}</span>
@@ -215,8 +218,9 @@ export function App() {
                 request={playlistRequest} onPlay={playback.startPlaylist} refreshTracks={refreshTracks} onQueue={playback.addToQueue} />
             </div>
             <div hidden={section !== 'downloads'}>
-              <Downloads active={section === 'downloads'} onImport={refreshTracks} />
+              <Downloads active={section === 'downloads'} onImport={refreshTracks} openSettings={() => openSection('settings')} />
             </div>
+            <div hidden={section !== 'settings'}><ModuleSettings active={section === 'settings'} /></div>
           </div>
         </main>
         {playback.error && <p className="playback-error" role="alert">{playback.error}</p>}

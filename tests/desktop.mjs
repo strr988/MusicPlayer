@@ -125,28 +125,25 @@ test('an abrupt Electron exit after importing a download preserves the Track ID,
     assert.equal(db.prepare('SELECT count(*) AS count FROM external_recordings').get().count, 1)
   })
 
-const archiveLiveOptions = { skip: !process.env.MUSIC_PLAYER_YTDLP_EXE, timeout: 340_000 }
+const live = process.env.MUSIC_PLAYER_LIVE_SOURCES === '1'
+const archiveLiveOptions = { skip: !live, timeout: 1_400_000 }
 
-test('SoundCloud shows public track metadata, artwork, streams and the original sign-in requirement',
-  { skip: !process.env.MUSIC_PLAYER_YTDLP_EXE, timeout: 100_000 }, async t => {
+test('SoundCloud shows public track metadata after installing yt-dlp through the Downloads card',
+  { skip: !live, timeout: 760_000 }, async t => {
     const { profile, run } = await prepareElectron(t)
-    await mkdir(join(profile, 'tools'), { recursive: true })
-    await copyFile(process.env.MUSIC_PLAYER_YTDLP_EXE, join(profile, 'tools', 'yt-dlp.exe'))
-    await run('downloads-soundcloud', 90_000)
+    await run('downloads-soundcloud', 750_000)
     assert.deepEqual(await readdir(join(profile, 'music-downloads')), [])
   })
 
 test('SoundCloud binds an authorized release MP3 to the analyzed track and plays it after restart',
-  { skip: !process.env.MUSIC_PLAYER_YTDLP_EXE || !process.env.MUSIC_PLAYER_SC_SAMPLE, timeout: 190_000 }, async t => {
+  { skip: !live || !process.env.MUSIC_PLAYER_SC_SAMPLE, timeout: 850_000 }, async t => {
     const { fixtures, profile, run } = await prepareElectron(t)
     const sample = join(fixtures, 'Convergence.mp3')
     await copyFile(process.env.MUSIC_PLAYER_SC_SAMPLE, sample)
     const original = await readFile(sample)
     assert.equal(createHash('sha256').update(original).digest('hex'),
       'c7fd63d6ad0e8902dbedbb08e7be1770902efb440f8e3896b1beb992ac18c0ae')
-    await mkdir(join(profile, 'tools'), { recursive: true })
-    await copyFile(process.env.MUSIC_PLAYER_YTDLP_EXE, join(profile, 'tools', 'yt-dlp.exe'))
-    await run('downloads-soundcloud-original', 90_000)
+    await run('downloads-soundcloud-original', 750_000)
     await run('downloads-soundcloud-restart', 90_000)
     assert.deepEqual(await readdir(join(profile, 'music-downloads')), [])
     assert.deepEqual(await readFile(sample), original)
@@ -158,21 +155,18 @@ test('SoundCloud binds an authorized release MP3 to the analyzed track and plays
       [['soundcloud', sourceId, trackId]])
   })
 
-test('Archive.org downloads and plays an authorized original without FFmpeg, then restores the imported Track ID',
+test('Archive.org downloads an authorized original after GUI installation and plays it after module removal',
   archiveLiveOptions, async t => {
     const { profile, run } = await prepareElectron(t)
-    await mkdir(join(profile, 'tools'), { recursive: true })
-    await copyFile(process.env.MUSIC_PLAYER_YTDLP_EXE, join(profile, 'tools', 'yt-dlp.exe'))
-    await run('downloads-live', 300_000)
-    await run('downloads-restart')
+    await run('downloads-live', 1_350_000)
+    await run('downloads-remove-restart')
+    assert.deepEqual(await readdir(join(profile, 'modules', 'yt-dlp')), ['registry.json'])
   })
 
 test('Archive.org rejects an album and downloads, plays and restores the selected authorized FLAC track',
   archiveLiveOptions, async t => {
-    const { profile, run } = await prepareElectron(t)
-    await mkdir(join(profile, 'tools'), { recursive: true })
-    await copyFile(process.env.MUSIC_PLAYER_YTDLP_EXE, join(profile, 'tools', 'yt-dlp.exe'))
-    await run('downloads-live-flac', 300_000)
+    const { run } = await prepareElectron(t)
+    await run('downloads-live-flac', 1_350_000)
     await run('downloads-restart')
   })
 

@@ -1,3 +1,5 @@
 * text=auto
 *.mp3 binary
 *.flac binary
+tests/fixtures/yt-dlp/SHA2-256SUMS -text
+tests/fixtures/yt-dlp/SHA2-256SUMS.sig binary

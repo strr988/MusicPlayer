@@ -1,4 +1,5 @@
 import type { DownloadsApi } from './music-sources'
+import type { YtDlpModuleApi } from './modules'
 
 export const channels = {
   getWaveQueue: 'recommendations:get-wave-queue',
@@ -153,6 +154,7 @@ export interface ListeningDataReader { getListeningData(): ListeningData }
 
 export interface MusicPlayerApi {
   downloads: DownloadsApi
+  ytDlp: YtDlpModuleApi
   getWaveQueue(): Promise<string[]>
   getWaveRecommendations(): Promise<WaveRecommendations>
   getWaveMode(): Promise<WaveMode>

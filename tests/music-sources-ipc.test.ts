@@ -3,9 +3,12 @@ import { beforeEach, expect, test, vi } from 'vitest'
 import { registerDownloadIpc } from '../src/main/music-sources/ipc'
 import type { DownloadManager } from '../src/main/music-sources/download-manager'
 import { downloadChannels } from '../src/shared/music-sources'
+import { ytDlpChannels } from '../src/shared/modules'
+import { registerModuleIpc } from '../src/main/modules/ipc'
+import type { ModuleManager, ModuleRelease } from '../src/main/modules/module-manager'
 
 const electron = vi.hoisted(() => ({
-  dialog: { showOpenDialog: vi.fn() },
+  dialog: { showOpenDialog: vi.fn(), showMessageBox: vi.fn() },
   ipcMain: { handle: vi.fn() },
   shell: { openExternal: vi.fn() },
 }))
@@ -62,4 +65,25 @@ test('imports only the native dialog selection and skips the picker for an exist
   electron.dialog.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: ['selected.flac'] })
   await expect(importOriginal(trusted, id, { title: ' Edited ' })).resolves.toBe(true)
   expect(manager.importSoundCloudOriginal).toHaveBeenCalledExactlyOnceWith(id, 'selected.flac', { title: 'Edited' })
+})
+
+test('validates every module IPC request and confirms the version selected in Main', async () => {
+  const change = vi.fn(async (_action, _hasActiveDownloads, confirm) => confirm('2026.10.26', new AbortController().signal))
+  const module = { change } as unknown as ModuleManager<ModuleRelease>
+  registerModuleIpc(module, () => false, event => {
+    if (event !== trusted) throw new Error('Untrusted sender')
+    return owner
+  })
+  for (const channel of Object.values(ytDlpChannels)) {
+    expect(() => handler(channel)({} as IpcMainInvokeEvent)).toThrow('Untrusted sender')
+    expect(() => handler(channel)(trusted, 'unexpected.exe')).toThrow('параметры')
+  }
+  expect(change).not.toHaveBeenCalled()
+  electron.dialog.showMessageBox.mockResolvedValueOnce({ response: 1 }).mockResolvedValueOnce({ response: 0 })
+  const install = handler(ytDlpChannels.install)
+  await expect(install(trusted)).resolves.toBe(false)
+  await expect(install(trusted)).resolves.toBe(true)
+  expect(electron.dialog.showMessageBox).toHaveBeenCalledWith(owner, expect.objectContaining({
+    message: 'Установить модуль · yt-dlp 2026.10.26', defaultId: 1, cancelId: 1, signal: expect.any(AbortSignal),
+  }))
 })

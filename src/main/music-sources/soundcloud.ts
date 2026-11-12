@@ -2,7 +2,8 @@ import { artworkMime, maxImageBytes } from '../artwork'
 import { guardedResponse, readBounded, validateHttpsEndpoint, withSourceProxy } from './network'
 import { label, object, parseJson } from './provider'
 import type { Analysis, MusicSourceProvider, SourceLink } from './provider'
-import { verifiedYtDlp } from './yt-dlp'
+import { prepareYtDlp } from './yt-dlp'
+import type { LoadYtDlp } from './yt-dlp'
 
 const trackHosts = ['soundcloud.com', 'www.soundcloud.com', 'm.soundcloud.com']
 const imageHosts = ['i1.sndcdn.com', 'a1.sndcdn.com']
@@ -88,7 +89,7 @@ export class SoundCloudProvider implements MusicSourceProvider {
   readonly id = 'soundcloud' as const
   readonly hosts = trackHosts
 
-  constructor(private readonly binary: string) {}
+  constructor(private readonly load: LoadYtDlp) {}
 
   recognize = soundCloudLink
 
@@ -97,7 +98,7 @@ export class SoundCloudProvider implements MusicSourceProvider {
   }
 
   async analyze({ url }: SourceLink, directory: string, signal: AbortSignal): Promise<Analysis> {
-    const analyze = await verifiedYtDlp(this.binary, directory, signal)
+    const analyze = await prepareYtDlp(this.load, directory, signal)
     const { stdout, stderr } = await withSourceProxy(analysisHosts, proxy => analyze(url, proxy, 'soundcloud'))
     const result = normalizeSoundCloud(stdout, stderr)
     const image = result.metadata.artworkUrl

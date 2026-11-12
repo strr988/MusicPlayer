@@ -2,8 +2,19 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { channels } from '../shared/contracts'
 import type { MusicPlayerApi } from '../shared/contracts'
 import { downloadChannels } from '../shared/music-sources'
+import { ytDlpChannels } from '../shared/modules'
 
 const api: MusicPlayerApi = {
+  ytDlp: {
+    status: () => ipcRenderer.invoke(ytDlpChannels.status),
+    check: () => ipcRenderer.invoke(ytDlpChannels.check),
+    install: () => ipcRenderer.invoke(ytDlpChannels.install),
+    update: () => ipcRenderer.invoke(ytDlpChannels.update),
+    reinstall: () => ipcRenderer.invoke(ytDlpChannels.reinstall),
+    remove: () => ipcRenderer.invoke(ytDlpChannels.remove),
+    rollback: () => ipcRenderer.invoke(ytDlpChannels.rollback),
+    cancel: () => ipcRenderer.invoke(ytDlpChannels.cancel),
+  },
   downloads: {
     list: () => ipcRenderer.invoke(downloadChannels.list),
     analyze: url => ipcRenderer.invoke(downloadChannels.analyze, url),

@@ -16,7 +16,8 @@ async function eventually(check, label, timeout = 8_000) {
   assert.fail(`Timed out waiting for ${label}`)
 }
 
-export async function verify(folder, profile, phase, preload = fileURLToPath(new URL('../out/preload/index.cjs', import.meta.url))) {
+export async function verify(folder, profile, phase, preload = fileURLToPath(new URL('../out/preload/index.cjs', import.meta.url)),
+  simulateFailedUpdate) {
   await app.whenReady()
   const player = await eventually(() => BrowserWindow.getAllWindows()[0], 'Electron window')
   const { webContents } = player
@@ -109,7 +110,7 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
   const expectedApi = phase === 'legacy-import' ? oldApi :
     app.getVersion() === '0.2.0' && app.isPackaged ? playlistApi :
       playlistApi.concat(['getPlaybackSession', 'setPlaybackSession'], explainable ? ['getWaveRecommendations'] : [],
-        hasDownloads ? ['downloads'] : []).sort()
+        hasDownloads ? ['downloads', 'ytDlp'] : []).sort()
   if (phase.startsWith('downloads-')) {
     assert.deepEqual(await run('Object.keys(window.musicPlayer.downloads).sort()'),
       ['addToLibrary', 'analyze', 'cancel', 'chooseCover', 'confirm', 'dismiss', 'importSoundCloudOriginal',
@@ -117,8 +118,74 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     await click('Загрузки')
     await waitFor('document.querySelector(".downloads h1")?.innerText === "Загрузки"', 'Downloads section')
     const statePath = join(profile, 'downloads-smoke.json')
-    if (phase === 'downloads-soundcloud') {
+    const moduleStatus = () => run('window.musicPlayer.ytDlp.status()')
+    const moduleScreens = phase === 'downloads-live' && process.env.MUSIC_PLAYER_MODULE_SCREENSHOTS
+    const captureModule = async name => {
+      if (!moduleScreens) return
+      await run('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+      await writeFile(join(moduleScreens, name), (await webContents.capturePage()).toPNG())
+    }
+    if (phase === 'downloads-offline') {
+      await waitFor('!!document.querySelector(".download-module")', 'install card')
+      await setInput('.download-form input', 'https://archive.org/details/jamendo-184210')
+      assert.equal(await run('document.querySelector(".download-form button").disabled'), true)
+      await assert.rejects(run('window.musicPlayer.downloads.analyze("https://127.0.0.1/details/demo")'),
+        error => error.cause.message.includes('Поддерживаются ссылки'))
+      await click('Открыть настройки')
+      await waitFor('document.querySelector(".module-settings .module-state")?.innerText === "Не установлен"', 'missing module settings')
+      assert.match(await run('document.querySelector(".module-settings .module-card").innerText'), /Stable/)
+      assert.deepEqual(await run('Object.keys(window.musicPlayer.ytDlp).sort()'),
+        ['cancel', 'check', 'install', 'reinstall', 'remove', 'rollback', 'status', 'update'])
+      return
+    }
+    const firstInstall = ['downloads-live', 'downloads-live-flac', 'downloads-soundcloud', 'downloads-soundcloud-original'].includes(phase)
+    if (firstInstall) {
+      const draft = 'https://archive.org/details/jamendo-184210'
+      await setInput('.download-form input', draft)
+      await waitFor('!!document.querySelector(".download-module")', 'install card')
+      await captureModule('01-install.png')
+      let confirmations = 0
+      dialog.showMessageBox = async (_owner, options) => {
+        assert.match(options.message, /Установить модуль · yt-dlp \d{4}\.\d{2}\.\d{2}/)
+        assert.equal(options.defaultId, options.cancelId)
+        confirmations++
+        return { response: 0 }
+      }
+      await click('Установить модуль')
+      if (moduleScreens) {
+        await waitFor('document.querySelector(".module-progress [role=status]")?.textContent.includes("Скачиваем")',
+          'install progress', 25_000)
+        await captureModule('02-install-progress.png')
+      }
+      await eventually(async () => {
+        const state = await moduleStatus()
+        if (state.message?.error) throw new Error(state.message.text)
+        return state.state === 'installed' && state.phase === null
+      }, 'verified module installation', 650_000)
+      assert.equal(confirmations, 1)
+      await waitFor('!document.querySelector(".download-form button").disabled', 'analysis enabled after installation')
+      assert.equal(await run('document.querySelector(".download-form input").value'), draft)
+      if (phase === 'downloads-live') {
+        await captureModule('03-analyze-after-install.png')
+        await click('Настройки')
+        await waitFor('document.querySelector(".module-state")?.innerText === "Установлен"', 'installed settings')
+        const before = await moduleStatus()
+        await click('Проверить обновления')
+        await eventually(async () => {
+          const state = await moduleStatus()
+          if (state.message?.error) throw new Error(state.message.text)
+          return state.phase === null && state.lastChecked?.ok && state.lastChecked.date !== before.lastChecked.date &&
+            state.installedVersion === before.installedVersion
+        }, 'check Stable release without installing', 30_000)
+        assert.equal(confirmations, 1)
+        await waitFor('!!document.querySelector(".module-check-result")', 'check result visible')
+        await captureModule('04-settings-check.png')
+        await click('Загрузки')
+      }
+    }
+    async function analyzeSoundCloud() {
       await setInput('.download-form input', 'https://soundcloud.com/the80m/the-following?utm_source=clipboard')
+      await waitFor('!document.querySelector(".download-form button").disabled', 'SoundCloud analysis enabled')
       await click('Анализировать ссылку')
       const track = await eventually(async () => {
         const [job] = await run('window.musicPlayer.downloads.list()')
@@ -134,12 +201,16 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
       await waitFor('document.querySelector(".download-cover img")?.naturalWidth > 0', 'SoundCloud artwork')
       assert.match(await run('document.querySelector(".download-row").textContent'), /войдите в аккаунт/)
       assert.equal(await run(`${buttons}.some(button => button.getClientRects().length && button.textContent.includes('Скачать оригинал'))`), false)
+    }
+    if (phase === 'downloads-soundcloud') {
+      await analyzeSoundCloud()
       return
     }
     if (phase === 'downloads-soundcloud-original' || phase === 'downloads-soundcloud-restart') {
       const url = 'https://soundcloud.com/scottbuckley/convergence-cc-by'
       const title = 'Convergence (library edit)'
       await setInput('.download-form input', url + '?utm_source=clipboard')
+      await waitFor('!document.querySelector(".download-form button").disabled', 'SoundCloud analysis enabled')
       await click('Анализировать ссылку')
       const job = await eventually(async () => {
         const [job] = await run('window.musicPlayer.downloads.list()')
@@ -214,7 +285,7 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
       await writeFile(statePath, JSON.stringify({ id: job.id, trackId: track.id, title: track.title }))
       return
     }
-    if (phase === 'downloads-restart') {
+    if (phase === 'downloads-restart' || phase === 'downloads-remove-restart') {
       const { id, trackId, title } = JSON.parse(await readFile(statePath, 'utf8'))
       const [restored] = await run('window.musicPlayer.downloads.list()')
       assert.deepEqual({ id: restored.id, trackId: restored.trackId, status: restored.status }, { id, trackId, status: 'completed' })
@@ -223,6 +294,20 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
       assert.equal(tracks.length, 1)
       const [track] = tracks
       assert.deepEqual([track.id, track.title, track.available], [trackId, title, true])
+      if (phase === 'downloads-remove-restart') {
+        dialog.showMessageBox = async (_owner, options) => {
+          assert.match(options.message, /Удалить модуль · yt-dlp/)
+          return { response: 0 }
+        }
+        await click('Настройки')
+        await waitFor('document.querySelector(".module-state")?.innerText === "Установлен"', 'module restored after restart')
+        await click('Удалить модуль')
+        await waitFor('document.querySelector(".module-state")?.innerText === "Не установлен"', 'module removed')
+        await click('Библиотека')
+        await click(title)
+        await waitFor('!document.querySelector("audio").paused && document.querySelector("audio").currentTime > 0.2',
+          'imported file plays after module removal')
+      }
       return
     }
     const flac = phase === 'downloads-live-flac'
@@ -239,17 +324,9 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
       const file = 'Artificial.Music & Storm Infinity - empty vibes - 03 freefalling (with storm infinity).flac'
       url = album + '/' + encodeURIComponent(file)
     }
-    if (phase === 'downloads-offline') {
-      await setInput('.download-form input', 'https://127.0.0.1/details/demo')
-      await click('Анализировать ссылку')
-      await waitFor('document.querySelector(".downloads [role=alert]")?.textContent.includes("Поддерживаются ссылки")', 'unsupported URL message')
-    }
-    await setInput('.download-form input', url)
+    if (phase !== 'downloads-live') await setInput('.download-form input', url)
+    await waitFor('!document.querySelector(".download-form button").disabled', 'Archive.org analysis enabled')
     await click('Анализировать ссылку')
-    if (phase === 'downloads-offline') {
-      await waitFor('document.querySelector(".downloads [role=alert]")?.textContent.includes("2026.10.26")', 'missing yt-dlp')
-      return
-    }
     async function jobStatus(status, timeout = 55_000) {
       return eventually(async () => {
         const [job] = await run('window.musicPlayer.downloads.list()')
@@ -278,7 +355,7 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     await screenshot('0.6.0-download-analysis.png')
     await setInput('.download-fields input', title)
     await click('Скачать оригинал ' + format.toUpperCase())
-    const completed = await jobStatus('completed', 180_000)
+    const completed = await jobStatus('completed', 610_000)
     await waitFor('document.querySelector(".download-row")?.textContent.includes("Добавить в библиотеку")', 'completed job controls')
     await click('Добавить в библиотеку')
     await waitFor('document.querySelector(".download-row")?.textContent.includes("В библиотеке")', 'library integration')
@@ -293,6 +370,34 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     await click(title)
     await waitFor('document.querySelector("audio").currentTime > 0.2', 'imported track playback')
     await writeFile(statePath, JSON.stringify({ id: completed.id, trackId: track.id, title }))
+    if (phase === 'downloads-live') {
+      await click('Загрузки')
+      await analyzeSoundCloud()
+      await captureModule('06-soundcloud-analysis.png')
+    }
+    if (phase === 'downloads-live' && simulateFailedUpdate) {
+      const installed = (await moduleStatus()).installedVersion
+      const restoreRequest = simulateFailedUpdate(installed)
+      try {
+        await click('Настройки')
+        await waitFor(`${buttons}.some(button => button.textContent === 'Проверить обновления' && !button.disabled)`,
+          'update check control')
+        await click('Проверить обновления')
+        await waitFor(`${buttons}.some(button => button.textContent === 'Обновить' && !button.disabled)`, 'new version shown')
+        assert.equal((await moduleStatus()).installedVersion, installed)
+        dialog.showMessageBox = async (_owner, options) => {
+          assert.equal(options.message, `Обновить · yt-dlp ${installed}.1`)
+          return { response: 0 }
+        }
+        await click('Обновить')
+        await waitFor('document.querySelector(".module-settings [role=alert]")?.textContent.includes("Активна версия")',
+          'failed update preserves installed version', 35_000)
+        assert.equal((await moduleStatus()).installedVersion, installed)
+        await captureModule('05-update-failed.png')
+      } finally {
+        restoreRequest()
+      }
+    }
     return
   }
   assert.deepEqual(await run(`({

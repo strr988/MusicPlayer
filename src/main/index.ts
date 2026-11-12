@@ -13,6 +13,9 @@ import { DownloadManager } from './music-sources/download-manager'
 import { YtDlpProvider } from './music-sources/archive'
 import { SoundCloudProvider } from './music-sources/soundcloud'
 import { registerDownloadIpc } from './music-sources/ipc'
+import { registerModuleIpc } from './modules/ipc'
+import { ModuleManager } from './modules/module-manager'
+import { ytDlpModule } from './modules/yt-dlp-release'
 import { validatePlaybackEvent, validatePreference } from './feedback-validation'
 import { validatePlaybackSession } from './playback-session'
 import { explainWave, generateWave } from '../recommendations/engine'
@@ -188,8 +191,10 @@ async function start(): Promise<void> {
   }
   const library = new Library(join(userData, 'library.sqlite3'), join(userData, 'music-downloads'))
   const artwork = new Artwork(library)
-  const ytDlp = join(userData, 'tools', 'yt-dlp.exe')
-  const downloads = new DownloadManager(userData, [new YtDlpProvider(ytDlp), new SoundCloudProvider(ytDlp)], library)
+  const ytDlp = new ModuleManager(userData, ytDlpModule)
+  const load = () => ytDlp.binary()
+  const downloads = new DownloadManager(userData, [new YtDlpProvider(load), new SoundCloudProvider(load)], library,
+    () => ytDlp.assertAvailableForDownloads())
   let quitting = false
   let downloadsStopped = false
   app.on('before-quit', event => {
@@ -197,7 +202,7 @@ async function start(): Promise<void> {
     event.preventDefault()
     if (quitting) return
     quitting = true
-    void downloads.stop().finally(() => {
+    void Promise.allSettled([downloads.stop(), ytDlp.stop()]).finally(() => {
       downloadsStopped = true
       app.quit()
     })
@@ -249,6 +254,7 @@ async function start(): Promise<void> {
 
   registerIpc(library)
   registerDownloadIpc(downloads, senderWindow)
+  registerModuleIpc(ytDlp, () => downloads.hasActiveTasks(), senderWindow)
 
   async function createWindow(): Promise<void> {
     const player = new BrowserWindow({

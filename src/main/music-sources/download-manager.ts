@@ -96,7 +96,7 @@ export class DownloadManager {
 
   constructor(private readonly profile: string, private readonly providers: readonly MusicSourceProvider[],
     private readonly library: Pick<Library, 'getExternalTrackId' | 'validateDownloadedAudio' | 'importDownload' |
-      'importSoundCloudOriginal'>) {
+      'importSoundCloudOriginal'>, private readonly assertModuleIdle: () => void = () => {}) {
     this.prepared = this.prepare().then(() => true, () => false)
   }
 
@@ -181,7 +181,12 @@ export class DownloadManager {
   }
 
   private assertCapacity(): void {
+    this.assertModuleIdle()
     if (this.active >= maxActive) throw new Error('Очередь заполнена. Дождитесь выполнения задач.')
+  }
+
+  hasActiveTasks(): boolean {
+    return this.active > 0 || [...this.jobs.values()].some(job => job.importing !== undefined)
   }
 
   private async stage(operation: (directory: string) => Promise<void>): Promise<void> {
@@ -377,6 +382,7 @@ export class DownloadManager {
   }
 
   private startImport(job: Job, run: (signal: AbortSignal) => Promise<string>): Promise<boolean> {
+    this.assertModuleIdle()
     if (job.importing) return job.importing.completion
     const controller = new AbortController()
     const completion = run(controller.signal).then(trackId => {
