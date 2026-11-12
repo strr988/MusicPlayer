@@ -10,20 +10,23 @@ export const downloadChannels = {
 } as const
 
 export type AudioFormat = 'mp3' | 'flac'
+export const sourceNames = { 'archive.org': 'Archive.org', soundcloud: 'SoundCloud' } as const
 export type DownloadStatus = 'waiting' | 'analyzing' | 'ready' | 'downloading' | 'processing' |
   'completed' | 'cancelled' | 'failed'
 
 export interface SourceMetadata {
-  provider: 'archive.org'
+  provider: keyof typeof sourceNames
   sourceId: string
   originalUrl: string
   title: string | null
   artist: string | null
+  publisher?: string | null
   album: string | null
   durationSeconds: number | null
   artworkUrl: string | null
   audioFormats: string[]
   licenseUrl: string | null
+  licenseName?: string | null
   downloadFormat: AudioFormat | null
   restriction: string | null
 }

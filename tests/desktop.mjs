@@ -127,6 +127,15 @@ test('an abrupt Electron exit after importing a download preserves the Track ID,
 
 const archiveLiveOptions = { skip: !process.env.MUSIC_PLAYER_YTDLP_EXE, timeout: 340_000 }
 
+test('SoundCloud shows public track metadata, artwork, streams and the original sign-in requirement',
+  { skip: !process.env.MUSIC_PLAYER_YTDLP_EXE, timeout: 100_000 }, async t => {
+    const { profile, run } = await prepareElectron(t)
+    await mkdir(join(profile, 'tools'), { recursive: true })
+    await copyFile(process.env.MUSIC_PLAYER_YTDLP_EXE, join(profile, 'tools', 'yt-dlp.exe'))
+    await run('downloads-soundcloud', 90_000)
+    assert.deepEqual(await readdir(join(profile, 'music-downloads')), [])
+  })
+
 test('Archive.org downloads and plays an authorized original without FFmpeg, then restores the imported Track ID',
   archiveLiveOptions, async t => {
     const { profile, run } = await prepareElectron(t)

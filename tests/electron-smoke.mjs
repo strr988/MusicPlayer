@@ -116,6 +116,25 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     await click('Загрузки')
     await waitFor('document.querySelector(".downloads h1")?.innerText === "Загрузки"', 'Downloads section')
     const statePath = join(profile, 'downloads-smoke.json')
+    if (phase === 'downloads-soundcloud') {
+      await setInput('.download-form input', 'https://soundcloud.com/the80m/the-following?utm_source=clipboard')
+      await click('Анализировать ссылку')
+      const track = await eventually(async () => {
+        const [job] = await run('window.musicPlayer.downloads.list()')
+        if (job?.status === 'failed') throw new Error(job.error)
+        return job?.status === 'ready' && job.metadata
+      }, 'SoundCloud analysis', 75_000)
+      assert.equal(track.provider, 'soundcloud')
+      assert.equal(track.sourceId, '343609555')
+      assert.equal(track.title, 'The Following')
+      assert.equal(track.artist, '80M')
+      assert.ok(track.audioFormats.some(format => format.includes('AAC (HLS')))
+      assert.equal(track.downloadFormat, null)
+      await waitFor('document.querySelector(".download-cover img")?.naturalWidth > 0', 'SoundCloud artwork')
+      assert.match(await run('document.querySelector(".download-row").textContent'), /войдите в аккаунт/)
+      assert.equal(await run(`${buttons}.some(button => button.getClientRects().length && button.textContent.includes('Скачать оригинал'))`), false)
+      return
+    }
     if (phase === 'downloads-recovery-commit') {
       const [job] = await run('window.musicPlayer.downloads.list()')
       assert.equal(job.status, 'completed')

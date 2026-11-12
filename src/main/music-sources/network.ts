@@ -25,18 +25,25 @@ async function resolveHost(host: string): Promise<string> {
   return publicAddress(records.map(record => record.address))
 }
 
-export function validateArchiveEndpoint(url: URL, pathAllowed: (url: URL) => boolean): void {
-  const host = url.hostname
-  if (url.protocol !== 'https:' || url.port || url.username || url.password || url.hash || url.search ||
-      (host !== 'archive.org' && !/^(?:ia|dn)[0-9]{5,9}(?:\.[a-z]{2})?\.archive\.org$/.test(host)) || !pathAllowed(url)) {
+export function validateHttpsEndpoint(url: URL, endpointAllowed: (url: URL) => boolean): void {
+  if (url.protocol !== 'https:' || url.port || url.username || url.password || url.hash || url.search || !endpointAllowed(url)) {
     throw new Error('Сетевой адрес или перенаправление заблокировано.')
   }
 }
 
-export async function archiveResponse(url: URL, pathAllowed: (url: URL) => boolean, signal: AbortSignal) {
+export function validateArchiveEndpoint(url: URL, pathAllowed: (url: URL) => boolean): void {
+  validateHttpsEndpoint(url, target => (target.hostname === 'archive.org' ||
+    /^(?:ia|dn)[0-9]{5,9}(?:\.[a-z]{2})?\.archive\.org$/.test(target.hostname)) && pathAllowed(target))
+}
+
+export function archiveResponse(url: URL, pathAllowed: (url: URL) => boolean, signal: AbortSignal) {
+  return guardedResponse(url, target => validateArchiveEndpoint(target, pathAllowed), signal)
+}
+
+export async function guardedResponse(url: URL, validate: (url: URL) => void, signal: AbortSignal) {
   for (let hops = 0; hops <= 4; hops++) {
     signal.throwIfAborted()
-    validateArchiveEndpoint(url, pathAllowed)
+    validate(url)
     const address = await resolveHost(url.hostname)
     const response = await new Promise<IncomingMessage>((resolve, reject) => {
       // Connect to the checked address while keeping the original Host and TLS identity.
@@ -74,7 +81,7 @@ export async function readBounded(response: IncomingMessage, limit: number): Pro
   return Buffer.concat(chunks)
 }
 
-export async function withArchiveProxy<T>(operation: (proxy: string) => Promise<T>): Promise<T> {
+export async function withSourceProxy<T>(hosts: readonly string[], operation: (proxy: string) => Promise<T>): Promise<T> {
   const sockets = new Set<Socket>()
   let bytes = 0
   function track(socket: Socket) {
@@ -87,11 +94,12 @@ export async function withArchiveProxy<T>(operation: (proxy: string) => Promise<
   server.maxConnections = 4
   server.on('connection', track)
   server.on('connect', (req, client: Socket, head) => {
-    if (req.url !== 'archive.org:443') {
+    const host = hosts.find(name => req.url === `${name}:443`)
+    if (!host) {
       client.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
       return
     }
-    void resolveHost('archive.org').then(address => {
+    void resolveHost(host).then(address => {
       if (client.destroyed) return
       const remote = connect({ host: address, port: 443, family: 4 })
       track(remote)

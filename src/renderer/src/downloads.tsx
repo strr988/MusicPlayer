@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { DownloadJob, DownloadStatus, MetadataEdits, SourceMetadata } from '../../shared/music-sources'
+import { sourceNames } from '../../shared/music-sources'
 import { Icon } from './icons'
 
 const statusLabel: Record<DownloadStatus, string> = {
@@ -59,12 +60,12 @@ export function Downloads({ active, onImport }: { active: boolean; onImport: () 
 
   return <section className="downloads">
     <header className="section-heading">
-      <div><h1>Загрузки</h1><p>Публичные записи Archive.org с открытой лицензией</p></div>
+      <div><h1>Загрузки</h1><p>Публичные записи Archive.org и SoundCloud</p></div>
     </header>
     <form className="download-form" onSubmit={event => { event.preventDefault(); void analyze() }}>
       <label>Ссылка на запись
         <input value={url} onChange={event => setUrl(event.target.value)} type="url" required maxLength={2048}
-          placeholder="https://archive.org/details/…" />
+          placeholder="Ссылка Archive.org или SoundCloud" />
       </label>
       <button className="primary" type="submit" disabled={submitting || !url.trim()}>
         <Icon name="search" />Анализировать ссылку
@@ -194,10 +195,13 @@ function MetadataForm({ metadata, coverUrl, duplicate, busy, confirm, chooseCove
 
 function SourceDetails({ metadata }: { metadata: SourceMetadata }) {
   return <dl className="download-details">
-    <dt>Источник</dt><dd>Archive.org</dd>
+    <dt>Источник</dt><dd>{sourceNames[metadata.provider]}</dd>
     <dt>Ссылка</dt><dd>{metadata.originalUrl}</dd>
     <dt>ID записи</dt><dd>{metadata.sourceId}</dd>
-    <dt>Аудиоформаты</dt><dd>{metadata.audioFormats.map(format => format.toUpperCase()).join(', ') || 'Нет данных'}</dd>
-    <dt>Лицензия</dt><dd>{metadata.licenseUrl ?? 'Нет подтверждённой открытой лицензии'}</dd>
+    {metadata.publisher && <><dt>Опубликовал</dt><dd>{metadata.publisher}</dd></>}
+    <dt>{metadata.provider === 'soundcloud' ? 'Потоковые форматы' : 'Аудиоформаты'}</dt>
+    <dd>{(metadata.provider === 'soundcloud' ? metadata.audioFormats :
+      metadata.audioFormats.map(format => format.toUpperCase())).join(', ') || 'Нет данных'}</dd>
+    <dt>Лицензия</dt><dd>{metadata.licenseUrl ?? metadata.licenseName ?? 'Нет подтверждённой открытой лицензии'}</dd>
   </dl>
 }

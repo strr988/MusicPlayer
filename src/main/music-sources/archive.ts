@@ -2,39 +2,18 @@ import { createHash } from 'node:crypto'
 import { createWriteStream } from 'node:fs'
 import { Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
-import type { AudioFormat, DownloadJob, SourceMetadata } from '../../shared/music-sources'
+import type { DownloadJob } from '../../shared/music-sources'
 import { artworkMime, maxImageBytes } from '../artwork'
-import { archiveResponse, readBounded, validateArchiveEndpoint, withArchiveProxy } from './network'
+import { archiveResponse, readBounded, validateArchiveEndpoint, withSourceProxy } from './network'
 import { verifiedYtDlp } from './yt-dlp'
+import { label, maxAudioBytes, object, parseJson } from './provider'
+import type { Analysis, MusicSourceProvider, OriginalFile, SourceLink } from './provider'
 
-export const maxAudioBytes = 150 * 1024 * 1024
 const identifierPattern = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$/
 
-interface SourceLink {
-  url: string
+interface ArchiveLink extends SourceLink {
   item: string
   file: string | null
-}
-
-interface OriginalFile {
-  format: AudioFormat
-  name: string
-  size: number
-  sha1: string
-}
-
-interface Analysis {
-  metadata: SourceMetadata
-  original: OriginalFile | null
-  cover: Buffer | null
-}
-
-export interface MusicSourceProvider {
-  readonly id: SourceMetadata['provider']
-  recognize(value: unknown): SourceLink
-  analyze(link: SourceLink, directory: string, signal: AbortSignal): Promise<Analysis>
-  download(link: SourceLink, analysis: Analysis, path: string, signal: AbortSignal,
-    progress: (value: NonNullable<DownloadJob['progress']>) => void): Promise<void>
 }
 
 function safeName(value: string): boolean {
@@ -46,7 +25,7 @@ function encodeFile(name: string): string {
   return name.split('/').map(encodeURIComponent).join('/')
 }
 
-export function archiveLink(value: unknown): SourceLink {
+export function archiveLink(value: unknown): ArchiveLink {
   if (typeof value !== 'string' || value.length > 2048) throw new Error('Введите ссылку HTTPS на запись Archive.org.')
   const match = /^https:\/\/(?:www\.)?archive\.org\/details\/([^/?#]+)(?:\/([^?#]+))?\/?$/i.exec(value.trim())
   if (!match || !identifierPattern.test(match[1])) throw new Error('Поддерживаются ссылки на записи archive.org/details/.')
@@ -56,24 +35,6 @@ export function archiveLink(value: unknown): SourceLink {
     if (!safeName(file)) throw new Error('Некорректное имя записи.')
   }
   return { item: match[1], file, url: `https://archive.org/details/${match[1]}${file ? '/' + encodeFile(file) : ''}` }
-}
-
-function object(value: unknown): Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value) ?
-    value as Record<string, unknown> : {}
-}
-
-function parseJson(value: string): Record<string, unknown> {
-  let parsed: unknown
-  try { parsed = JSON.parse(value) } catch { throw new Error('Источник вернул некорректный JSON.') }
-  const result = object(parsed)
-  if (!Object.keys(result).length) throw new Error('Источник не вернул метаданные записи.')
-  return result
-}
-
-function label(value: unknown): string | null {
-  if (typeof value !== 'string') return null
-  return value.replace(/[\u0000-\u001f\u007f]/gu, ' ').trim().slice(0, 240) || null
 }
 
 function openLicense(value: unknown): string | null {
@@ -106,7 +67,7 @@ function originalFile(document: ReturnType<typeof archiveDocument>, name: string
   return { format, name, size, sha1: file.sha1 }
 }
 
-export function normalizeArchive(link: SourceLink, json: string, archiveJson: string): Omit<Analysis, 'cover'> {
+export function normalizeArchive(link: ArchiveLink, json: string, archiveJson: string): Omit<Analysis, 'cover'> {
   const info = parseJson(json)
   if (Array.isArray(info.entries) || info._type === 'playlist' || info._type === 'multi_video') {
     throw new Error('Ссылка содержит несколько записей. Укажите ссылку на один файл в Archive.org.')
@@ -164,13 +125,13 @@ function filePathAllowed(item: string, name: string) {
   }
 }
 
-async function metadataResponse(link: SourceLink, signal: AbortSignal): Promise<string> {
+async function metadataResponse(link: ArchiveLink, signal: AbortSignal): Promise<string> {
   const path = `/metadata/${link.item}`
   return (await readBounded(await archiveResponse(new URL(path, 'https://archive.org'),
     url => url.hostname === 'archive.org' && url.pathname === path, signal), 2 * 1024 * 1024)).toString('utf8')
 }
 
-async function coverImage(link: SourceLink, signal: AbortSignal): Promise<Buffer | null> {
+async function coverImage(link: ArchiveLink, signal: AbortSignal): Promise<Buffer | null> {
   const name = '__ia_thumb.jpg'
   const url = new URL(`/download/${link.item}/${name}`, 'https://archive.org')
   const image = await readBounded(await archiveResponse(url, filePathAllowed(link.item, name), signal), maxImageBytes)
@@ -179,23 +140,31 @@ async function coverImage(link: SourceLink, signal: AbortSignal): Promise<Buffer
 
 export class YtDlpProvider implements MusicSourceProvider {
   readonly id = 'archive.org' as const
+  readonly hosts = ['archive.org', 'www.archive.org']
 
   constructor(private readonly binary: string) {}
 
   recognize = archiveLink
 
-  async analyze(link: SourceLink, directory: string, signal: AbortSignal): Promise<Analysis> {
+  matchesRecording(sourceId: string, { url }: SourceLink): boolean {
+    const { item, file } = archiveLink(url)
+    return file !== null && sourceId === `${item}/${file}`
+  }
+
+  async analyze(input: SourceLink, directory: string, signal: AbortSignal): Promise<Analysis> {
+    const link = archiveLink(input.url)
     const analyze = await verifiedYtDlp(this.binary, directory, signal)
-    const json = await withArchiveProxy(proxy => analyze(link.url, proxy))
-    const result = normalizeArchive(link, json, await metadataResponse(link, signal))
+    const { stdout } = await withSourceProxy(['archive.org'], proxy => analyze(link.url, proxy, 'archive.org'))
+    const result = normalizeArchive(link, stdout, await metadataResponse(link, signal))
     const cover = await coverImage(link, signal).catch(() => null)
     signal.throwIfAborted()
     if (cover) result.metadata.artworkUrl = `https://archive.org/download/${link.item}/__ia_thumb.jpg`
     return { ...result, cover }
   }
 
-  async download(link: SourceLink, analysis: Analysis, path: string, signal: AbortSignal,
+  async download(input: SourceLink, analysis: Analysis, path: string, signal: AbortSignal,
     progress: (value: NonNullable<DownloadJob['progress']>) => void): Promise<void> {
+    const link = archiveLink(input.url)
     const expected = analysis.original
     if (!expected) throw new Error('Загрузка этой записи недоступна.')
     const document = archiveDocument(await metadataResponse(link, signal), link.item)

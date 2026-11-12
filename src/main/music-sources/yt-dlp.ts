@@ -18,12 +18,12 @@ export function ytDlpProcessError(stderr: string): Error {
   if (/404|not found|not available|removed/i.test(errors)) return new Error('Материал недоступен или удалён.')
   if (/403|429|login|private|restricted/i.test(errors)) return new Error('Источник ограничил доступ к записи.')
   if (/connection|timed out|network|proxy|ssl|certificate|urlopen|getaddrinfo|name resolution/i.test(errors)) {
-    return new Error('Сетевая ошибка при обращении к Archive.org.')
+    return new Error('Сетевая ошибка при обращении к источнику.')
   }
   return new Error('yt-dlp не смог прочитать метаданные записи.')
 }
 
-function run(executable: string, args: string[], directory: string, signal: AbortSignal): Promise<string> {
+function run(executable: string, args: string[], directory: string, signal: AbortSignal): Promise<{ stdout: string; stderr: string }> {
   signal.throwIfAborted()
   return new Promise((resolve, reject) => {
     const root = process.env.SystemRoot ?? 'C:\\Windows'
@@ -66,7 +66,7 @@ function run(executable: string, args: string[], directory: string, signal: Abor
       signal.removeEventListener('abort', abort)
       if (failure) reject(failure)
       else if (code !== 0) reject(ytDlpProcessError(Buffer.concat(stderr).toString('utf8')))
-      else resolve(Buffer.concat(stdout).toString('utf8'))
+      else resolve({ stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8') })
     })
   })
 }
@@ -94,10 +94,11 @@ export async function verifiedYtDlp(binary: string, directory: string, signal: A
   await writeFile(executable, content, { flag: 'wx', signal })
   const defaults = ['--ignore-config', '--no-plugin-dirs', '--no-cache-dir', '--no-js-runtimes',
     '--no-remote-components', '--no-cookies', '--no-cookies-from-browser', '--encoding', 'utf-8']
-  checkVersion(await run(executable, [...defaults, '--version'], directory, signal))
-  return (url: string, proxy: string) => run(executable, [
-    ...defaults, '--proxy', proxy, '--use-extractors', 'archive.org', '--skip-download', '--dump-single-json',
-    '--playlist-items', '1:2', '--no-check-formats', '--retries', '0', '--extractor-retries', '0',
+  checkVersion((await run(executable, [...defaults, '--version'], directory, signal)).stdout)
+  return (url: string, proxy: string, extractor: 'archive.org' | 'soundcloud') => run(executable, [
+    ...defaults, '--proxy', proxy, '--use-extractors', extractor, '--skip-download', '--dump-single-json',
+    ...(extractor === 'archive.org' ? ['--playlist-items', '1:2'] : ['--ignore-no-formats-error']),
+    '--no-check-formats', '--retries', '0', '--extractor-retries', '0',
     '--ffmpeg-location', join(directory, 'unused-ffmpeg'), '--socket-timeout', '15', '--', url,
   ], directory, signal)
 }

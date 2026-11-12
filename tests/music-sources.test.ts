@@ -6,10 +6,11 @@ import { DatabaseSync } from 'node:sqlite'
 import { afterEach, expect, test, vi } from 'vitest'
 import { Library } from '../src/main/library'
 import { archiveLink, normalizeArchive } from '../src/main/music-sources/archive'
-import type { MusicSourceProvider } from '../src/main/music-sources/archive'
+import type { MusicSourceProvider } from '../src/main/music-sources/provider'
 import type { MetadataEdits } from '../src/shared/music-sources'
 import { DownloadManager, metadataEdits } from '../src/main/music-sources/download-manager'
-import { publicAddress, validateArchiveEndpoint, withArchiveProxy } from '../src/main/music-sources/network'
+import { publicAddress, validateArchiveEndpoint, withSourceProxy } from '../src/main/music-sources/network'
+import { normalizeSoundCloud, soundCloudLink, validateSoundCloudArtwork } from '../src/main/music-sources/soundcloud'
 import { checkVersion, verifiedYtDlp, ytDlpProcessError, ytDlpVersion } from '../src/main/music-sources/yt-dlp'
 import { request } from 'node:http'
 import { createHash } from 'node:crypto'
@@ -39,6 +40,16 @@ const archive = {
 }
 const json = JSON.stringify
 const analysis = normalizeArchive(link, json(cli), json(archive))
+const soundCloudUrl = 'https://soundcloud.com/the80m/the-following'
+const soundCloudCli = {
+  id: '343609555', extractor: 'soundcloud', webpage_url: soundCloudUrl,
+  track: 'The Following', artists: ['80M'], uploader: 'Label account', duration: 397.175,
+  license: 'all-rights-reserved', thumbnail: 'https://i1.sndcdn.com/artworks-000243916348-ktoo7d-original.jpg',
+  formats: [
+    { format_id: 'hls_aac_96k', ext: 'm4a', acodec: 'mp4a.40.2', vcodec: 'none', protocol: 'm3u8_native', abr: 96 },
+    { format_id: 'hls_aac_160k', ext: 'm4a', acodec: 'mp4a.40.2', vcodec: 'none', protocol: 'm3u8_native', abr: 160 },
+  ],
+}
 const directories: string[] = []
 
 async function profile() {
@@ -75,6 +86,67 @@ test('normalizes track metadata, omits unknown tags and ignores uploader identit
   expect(() => normalizeArchive(link, json({ ...cli, id: 'different' }), json(archive))).toThrow('другой')
 })
 
+test('accepts public SoundCloud tracks, strips share tracking and rejects other route shapes', () => {
+  expect(soundCloudLink(' https://m.soundcloud.com/the80m/the-following/?utm_source=clipboard&si=sample ')).toEqual({ url: soundCloudUrl })
+  for (const url of [
+    'http://soundcloud.com/the80m/the-following', 'https://soundcloud.com.evil.test/the80m/the-following',
+    'https://soundcloud.com@127.0.0.1/the80m/the-following', 'https://soundcloud.com:444/the80m/the-following',
+    'https://on.soundcloud.com/short', 'https://api-v2.soundcloud.com/tracks/343609555',
+    'https://soundcloud.com/the80m/sets/collection', 'https://soundcloud.com/the80m/likes',
+    `${soundCloudUrl}/s-private`, `${soundCloudUrl}?secret_token=s-private`,
+    'https://soundcloud.com/the80m/%2e%2e/the-following',
+  ]) expect(() => soundCloudLink(url)).toThrow('отдельный трек SoundCloud')
+})
+
+test('keeps SoundCloud streams, original availability and performer identity separate', () => {
+  const metadata = normalizeSoundCloud(json({
+    ...soundCloudCli,
+    formats: [
+      ...soundCloudCli.formats,
+      { ...soundCloudCli.formats[0], format_id: 'hls_aac_96k_preview' },
+      { ...soundCloudCli.formats[0], format_note: 'Premium', abr: 256 },
+      { ...soundCloudCli.formats[0], has_drm: true, abr: 128 },
+      { format_id: 'download', format_note: 'Original', ext: 'wav', url: 'https://example.test/signed-original' },
+    ],
+  }), '').metadata
+  expect(metadata).toMatchObject({
+    provider: 'soundcloud', sourceId: soundCloudCli.id, originalUrl: soundCloudUrl,
+    artist: '80M', publisher: 'Label account', album: null, durationSeconds: 397.175,
+    audioFormats: ['AAC (HLS, 96 кбит/с)', 'AAC (HLS, 160 кбит/с)'],
+    artworkUrl: soundCloudCli.thumbnail, downloadFormat: null,
+  })
+  expect(metadata.restriction).toContain('войдите в аккаунт')
+  expect(json(metadata)).not.toContain('signed-original')
+  const requiresSignIn = normalizeSoundCloud(json({ ...soundCloudCli, artists: undefined, formats: [], thumbnail: 'https://127.0.0.1/a.jpg' }),
+    'WARNING: Original download format is only available for registered users.').metadata
+  expect(requiresSignIn).toMatchObject({ artist: null, artworkUrl: null, downloadFormat: null, audioFormats: [] })
+  expect(requiresSignIn.restriction).toContain('войдите в аккаунт')
+  expect(() => normalizeSoundCloud(json({ ...soundCloudCli, webpage_url: `${soundCloudUrl}/s-secret` }), '')).toThrow()
+})
+
+test('validates SoundCloud artwork redirects and rejects cross-provider and non-HTTPS tunnels', async () => {
+  expect(() => validateSoundCloudArtwork(new URL(soundCloudCli.thumbnail))).not.toThrow()
+  for (const url of [
+    'http://i1.sndcdn.com/image.jpg', 'https://i1.sndcdn.com.evil.test/image.jpg',
+    'https://a1.sndcdn.com:8080/image.jpg', 'https://i1.sndcdn.com/image.jpg?redirect=127.0.0.1',
+    'https://169.254.169.254/image.jpg', 'https://archive.org/image.jpg', 'https://a1.sndcdn.com/image.svg',
+  ]) expect(() => validateSoundCloudArtwork(new URL(url))).toThrow('заблокировано')
+  await withSourceProxy(['soundcloud.com', 'api-v2.soundcloud.com'], async proxy => {
+    for (const target of ['archive.org:443', 'soundcloud.com:80', 'soundcloud.com.attacker.test:443', '127.0.0.1:443']) {
+      const status = await new Promise<number | undefined>((resolve, reject) => {
+        const tunnel = request(proxy, { method: 'CONNECT', path: target })
+        tunnel.on('error', reject)
+        tunnel.on('connect', (response, socket) => {
+          socket.destroy()
+          resolve(response.statusCode)
+        })
+        tunnel.end()
+      })
+      expect(status).toBe(403)
+    }
+  })
+})
+
 test('allows only a licensed, unrestricted original with the exact media identity', () => {
   const variants = [
     { ...archive, metadata: { ...archive.metadata, licenseurl: 'https://creativecommons.org/licenses/by-nc/4.0/' } },
@@ -107,7 +179,7 @@ test('network policy denies private DNS results and unapproved redirect destinat
     `https://127.0.0.1${file}`, `https://archive.org.attacker.test${file}`, `http://archive.org${file}`,
     `https://archive.org:8080${file}`, `https://web.archive.org${file}`, 'https://archive.org/0/items/other/tone.mp3',
   ]) expect(() => validateArchiveEndpoint(new URL(target), pathAllowed)).toThrow('заблокировано')
-  await withArchiveProxy(proxy => new Promise<void>((resolve, reject) => {
+  await withSourceProxy(['archive.org'], proxy => new Promise<void>((resolve, reject) => {
     const tunnel = request(proxy, { method: 'CONNECT', path: '169.254.169.254:443' })
     tunnel.on('error', reject)
     tunnel.on('connect', (response, socket) => {
@@ -137,9 +209,15 @@ test('does not confuse the intentionally disabled FFmpeg warning with a yt-dlp f
   expect(ytDlpProcessError('ERROR: Postprocessing: ffprobe and ffmpeg not found').message).toContain('FFmpeg')
 })
 
-function provider(overrides: Partial<MusicSourceProvider> = {}): MusicSourceProvider {
+type DownloadProvider = MusicSourceProvider & { download: NonNullable<MusicSourceProvider['download']> }
+
+function provider(overrides: Partial<DownloadProvider> = {}): DownloadProvider {
   return {
-    id: 'archive.org', recognize: archiveLink,
+    id: 'archive.org', hosts: ['archive.org'], recognize: archiveLink,
+    matchesRecording(sourceId, { url }) {
+      const { item, file } = archiveLink(url)
+      return file !== null && sourceId === `${item}/${file}`
+    },
     async analyze() { return { ...analysis, cover: null } },
     async download(_link, _analysis, path, _signal, progress) {
       progress({ bytes: 0, total: null })
@@ -163,6 +241,53 @@ function latch() {
   return { promise, resolve }
 }
 
+test('dispatches both sources through one queue and preserves provider-scoped Track IDs on reimport', async () => {
+  const directory = await profile()
+  const dbPath = join(directory, 'library.sqlite3')
+  const soundCloud = normalizeSoundCloud(json(soundCloudCli), '')
+  const adapter: MusicSourceProvider = {
+    id: 'soundcloud', hosts: ['soundcloud.com'], recognize: soundCloudLink,
+    matchesRecording: id => /^\d+$/.test(id),
+    async analyze() { return { ...soundCloud, cover: null } },
+  }
+  const archive = provider()
+  let library = new Library(dbPath)
+  let manager = new DownloadManager(directory, [archive, adapter], library)
+  try {
+    const signal = new AbortController().signal
+    const integrity = { size: audioBytes.length, sha1 }
+    const archiveFile = join(directory, 'archive.mp3')
+    const soundCloudFile = join(directory, 'soundcloud.mp3')
+    await copyFile(audio, archiveFile)
+    await copyFile(audio, soundCloudFile)
+    // Local bytes are synthetic. This exercises library identity without pretending SoundCloud granted a download.
+    const archiveId = await library.importDownload(archiveFile, { ...analysis.metadata, sourceId: soundCloudCli.id },
+      {}, null, integrity, signal)
+    await manager.analyze(soundCloudUrl)
+    await vi.waitFor(async () => expect((await manager.list())[0]).toMatchObject({
+      status: 'ready', duplicate: false, metadata: { provider: 'soundcloud', sourceId: soundCloudCli.id },
+    }))
+    await expect(manager.confirm((await manager.list())[0].id, {})).rejects.toThrow('недоступна')
+    await manager.analyze(url)
+    await vi.waitFor(async () => expect((await manager.list()).map(job => job.metadata?.provider))
+      .toEqual(['archive.org', 'soundcloud']))
+    const recording = { ...soundCloud.metadata, downloadFormat: 'mp3' as const }
+    const soundCloudId = await library.importDownload(soundCloudFile, recording, {}, null, integrity, signal)
+    expect(soundCloudId).not.toBe(archiveId)
+    await manager.stop()
+    library.close()
+    library = new Library(dbPath)
+    manager = new DownloadManager(directory, [archive, adapter], library)
+    await expect(library.importDownload(soundCloudFile, recording, {}, null, integrity, signal)).resolves.toBe(soundCloudId)
+    await manager.analyze(soundCloudUrl)
+    await vi.waitFor(async () => expect((await manager.list())[0]).toMatchObject({ duplicate: true, trackId: soundCloudId }))
+    expect(library.getTracks()).toHaveLength(2)
+  } finally {
+    await manager.stop()
+    library.close()
+  }
+})
+
 test('serializes jobs, applies queue capacity, cancels and removes staging data', async () => {
   const directory = await profile()
   const library = new Library(':memory:')
@@ -171,7 +296,7 @@ test('serializes jobs, applies queue capacity, cancels and removes staging data'
     if (signal.aborted) throw signal.reason
     return new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }))
   })
-  const manager = new DownloadManager(directory, provider({ analyze }), library)
+  const manager = new DownloadManager(directory, [provider({ analyze })], library)
   try {
     for (let i = 0; i < 8; i++) await manager.analyze(url)
     await expect(manager.analyze(url)).rejects.toThrow('Очередь заполнена')
@@ -194,9 +319,9 @@ test('reports network and disk errors while keeping the queue usable', async () 
   const analyze = vi.fn<MusicSourceProvider['analyze']>()
     .mockRejectedValueOnce(Object.assign(new Error('untrusted path'), { code: 'ECONNRESET' }))
     .mockResolvedValue({ ...analysis, cover: null })
-  const download = vi.fn<MusicSourceProvider['download']>().mockRejectedValue(
+  const download = vi.fn<DownloadProvider['download']>().mockRejectedValue(
     Object.assign(new Error('untrusted path'), { code: 'ENOSPC' }))
-  const manager = new DownloadManager(directory, provider({ analyze, download }), library)
+  const manager = new DownloadManager(directory, [provider({ analyze, download })], library)
   try {
     await manager.analyze(url)
     await manager.analyze(url)
@@ -220,7 +345,7 @@ test('cancelling an active download discards partial audio and allows a subseque
     signal.throwIfAborted()
     return new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }))
   })
-  const manager = new DownloadManager(directory, provider({ download }), library)
+  const manager = new DownloadManager(directory, [provider({ download })], library)
   try {
     await manager.analyze(url)
     await manager.analyze(url)
@@ -251,7 +376,7 @@ test('validates edits and preserves explicit empty values', () => {
 test('cancellation during processing leaves no published download or library entry', async () => {
   const directory = await profile()
   const library = new Library(':memory:')
-  const manager = new DownloadManager(directory, provider(), library)
+  const manager = new DownloadManager(directory, [provider()], library)
   const gate = latch()
   const validate = library.validateDownloadedAudio.bind(library)
   vi.spyOn(library, 'validateDownloadedAudio').mockImplementationOnce(async (...args) => {
@@ -278,13 +403,13 @@ test('cancellation during processing leaves no published download or library ent
 test('does not publish a playable file with the wrong checksum', async () => {
   const directory = await profile()
   const library = new Library(':memory:')
-  const manager = new DownloadManager(directory, provider({
+  const manager = new DownloadManager(directory, [provider({
     async download(_link, _analysis, path) {
       const modified = Buffer.from(audioBytes)
       modified[modified.length - 1] ^= 1
       await writeFile(path, modified)
     },
-  }), library)
+  })], library)
   try {
     await confirmDownload(manager)
     await vi.waitFor(async () => expect((await manager.list())[0]).toMatchObject({
@@ -300,7 +425,7 @@ test('does not publish a playable file with the wrong checksum', async () => {
 test('cancellation after the import hash check keeps the download and allows retry', async () => {
   const directory = await profile()
   const library = new Library(join(directory, 'library.sqlite3'))
-  const manager = new DownloadManager(directory, provider(), library)
+  const manager = new DownloadManager(directory, [provider()], library)
   const gate = latch()
   const parsing = latch()
   try {
@@ -334,7 +459,7 @@ test('a same-size replacement while the import waits fails integrity verificatio
   const directory = await profile()
   const dbPath = join(directory, 'library.sqlite3')
   const library = new Library(dbPath)
-  const manager = new DownloadManager(directory, provider(), library)
+  const manager = new DownloadManager(directory, [provider()], library)
   const gate = latch()
   const entered = latch()
   try {
@@ -389,7 +514,7 @@ test('recovers committed data and drops unpublished staging after a process is k
   const dbPath = join(directory, 'library.sqlite3')
   let library = new Library(dbPath, root)
   let libraryClosed = false
-  let manager = new DownloadManager(directory, provider(), library)
+  let manager = new DownloadManager(directory, [provider()], library)
   try {
     const id = await confirmDownload(manager, { title: 'Committed title' })
     await vi.waitFor(async () => expect((await manager.list())[0].status).toBe('completed'))
@@ -424,7 +549,7 @@ test('recovers committed data and drops unpublished staging after a process is k
     library = new Library(dbPath, root)
     libraryClosed = false
     expect((await library.importFolder(stage)).processed).toBe(0)
-    manager = new DownloadManager(directory, provider(), library)
+    manager = new DownloadManager(directory, [provider()], library)
     expect(await manager.list()).toEqual([expect.objectContaining({ id, status: 'completed', trackId: track.id })])
     expect(await readdir(root)).toEqual([id])
     await expect(manager.addToLibrary(id)).resolves.toBe(true)
@@ -440,7 +565,7 @@ test('recovers committed data and drops unpublished staging after a process is k
 
     await manager.stop()
     await truncate(path, audioBytes.length - 1)
-    manager = new DownloadManager(directory, provider(), library)
+    manager = new DownloadManager(directory, [provider()], library)
     expect(await manager.list()).toEqual([expect.objectContaining({
       id, trackId: track.id, status: 'failed', canDismiss: false,
       error: 'Загруженный файл отсутствует или его размер изменился.',
@@ -474,7 +599,7 @@ test('imports a completed task, survives a restart and deduplicates by source id
   const fixture = provider({
     async analyze() { return { ...analysis, cover } },
   })
-  let manager = new DownloadManager(directory, fixture, library)
+  let manager = new DownloadManager(directory, [fixture], library)
   try {
     expect((await readdir(directory)).some(path => /\.v5-.*\.backup$/.test(path))).toBe(true)
     await manager.analyze(url)
@@ -494,7 +619,7 @@ test('imports a completed task, survives a restart and deduplicates by source id
     await manager.stop()
     library.close()
     library = new Library(dbPath)
-    manager = new DownloadManager(directory, fixture, library)
+    manager = new DownloadManager(directory, [fixture], library)
     expect((await manager.list())[0]).toMatchObject({ status: 'completed', trackId })
     await expect(manager.addToLibrary(id)).resolves.toBe(true)
     expect(library.getTracks().find(track => track.id === trackId)).toMatchObject({

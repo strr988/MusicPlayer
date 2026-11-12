@@ -11,6 +11,7 @@ import { serveMedia } from './media'
 import { Artwork, artworkMime } from './artwork'
 import { DownloadManager } from './music-sources/download-manager'
 import { YtDlpProvider } from './music-sources/archive'
+import { SoundCloudProvider } from './music-sources/soundcloud'
 import { registerDownloadIpc } from './music-sources/ipc'
 import { validatePlaybackEvent, validatePreference } from './feedback-validation'
 import { validatePlaybackSession } from './playback-session'
@@ -187,7 +188,8 @@ async function start(): Promise<void> {
   }
   const library = new Library(join(userData, 'library.sqlite3'), join(userData, 'music-downloads'))
   const artwork = new Artwork(library)
-  const downloads = new DownloadManager(userData, new YtDlpProvider(join(userData, 'tools', 'yt-dlp.exe')), library)
+  const ytDlp = join(userData, 'tools', 'yt-dlp.exe')
+  const downloads = new DownloadManager(userData, [new YtDlpProvider(ytDlp), new SoundCloudProvider(ytDlp)], library)
   let quitting = false
   let downloadsStopped = false
   app.on('before-quit', event => {

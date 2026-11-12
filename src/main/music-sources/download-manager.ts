@@ -2,14 +2,13 @@ import { randomUUID } from 'node:crypto'
 import { lstat, mkdir, mkdtemp, open, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { playerOrigin } from '../../shared/contracts'
-import type { DownloadJob, MetadataEdits } from '../../shared/music-sources'
+import { sourceNames } from '../../shared/music-sources'
+import type { DownloadJob, MetadataEdits, SourceMetadata } from '../../shared/music-sources'
 import { artworkMime, maxImageBytes } from '../artwork'
 import type { DownloadIntegrity, Library } from '../library'
-import { maxAudioBytes } from './archive'
-import type { MusicSourceProvider } from './archive'
+import { maxAudioBytes } from './provider'
+import type { Analysis, MusicSourceProvider, SourceLink } from './provider'
 
-type Analysis = Awaited<ReturnType<MusicSourceProvider['analyze']>>
-type Link = ReturnType<MusicSourceProvider['recognize']>
 export const downloadIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const maxActive = 8
 const maxJobs = 100
@@ -18,7 +17,8 @@ const manifestLimit = 24 * 1024
 
 interface Job {
   snapshot: DownloadJob
-  link: Link
+  link: SourceLink
+  provider: MusicSourceProvider
   analysis?: Analysis
   customCover?: Buffer
   selectedCover?: Buffer | null
@@ -79,7 +79,7 @@ function message(error: unknown): string {
   const code = (error as NodeJS.ErrnoException)?.code
   if (code === 'ENOSPC' || code === 'EDQUOT') return 'Недостаточно места для сохранения файла.'
   if (code === 'ETIMEDOUT' || code === 'ENOTFOUND' || code === 'ECONNRESET' || code === 'ECONNREFUSED') {
-    return 'Ошибка сети. Проверьте подключение к Archive.org.'
+    return 'Ошибка сети. Проверьте подключение к источнику.'
   }
   if (code) return 'Не удалось прочитать или сохранить данные загрузки.'
   if (error instanceof Error && /^[А-ЯЁ]/u.test(error.message)) return error.message
@@ -94,7 +94,7 @@ export class DownloadManager {
   private root = ''
   private readonly prepared: Promise<boolean>
 
-  constructor(private readonly profile: string, private readonly provider: MusicSourceProvider,
+  constructor(private readonly profile: string, private readonly providers: readonly MusicSourceProvider[],
     private readonly library: Pick<Library, 'getExternalTrackId' | 'validateDownloadedAudio' | 'importDownload'>) {
     this.prepared = this.prepare().then(() => true, () => false)
   }
@@ -122,11 +122,12 @@ export class DownloadManager {
       Pick<DownloadJob, 'metadata' | 'edits'> & { sha1: string; size: number }
     const metadata = saved.metadata
     const format = metadata?.downloadFormat
-    if (!metadata || metadata.provider !== this.provider.id || (format !== 'mp3' && format !== 'flac') ||
+    const provider = this.providers.find(candidate => candidate.id === metadata?.provider)
+    if (!metadata || !provider?.download || (format !== 'mp3' && format !== 'flac') ||
         !/^[a-f0-9]{40}$/.test(saved.sha1) || !Number.isSafeInteger(saved.size) ||
         saved.size <= 0 || saved.size > maxAudioBytes) return
-    const link = this.provider.recognize(metadata.originalUrl)
-    if (metadata.sourceId !== `${link.item}/${link.file}`) return
+    const link = provider.recognize(metadata.originalUrl)
+    if (!provider.matchesRecording(metadata.sourceId, link)) return
     const path = join(directory, `audio.${format}`)
     const stat = await lstat(path).catch(() => undefined)
     const available = stat?.isFile() && stat.size === saved.size && await realpath(path).catch(() => undefined) === path
@@ -141,7 +142,7 @@ export class DownloadManager {
       canDismiss: false,
     }
     this.jobs.set(id, {
-      snapshot, link, selectedCover, path, size: stat?.isFile() ? stat.size : undefined,
+      snapshot, link, provider, selectedCover, path, size: stat?.isFile() ? stat.size : undefined,
       integrity: { size: saved.size, sha1: saved.sha1 }, controller: new AbortController(),
     })
   }
@@ -157,7 +158,7 @@ export class DownloadManager {
       const { status, metadata } = job.snapshot
       if (status !== 'ready' || !metadata) return { ...job.snapshot, importing: !!job.importing }
       const trackId = this.library.getExternalTrackId(metadata)
-      return { ...job.snapshot, trackId, duplicate: trackId !== undefined || this.hasDownload(job, metadata.sourceId) }
+      return { ...job.snapshot, trackId, duplicate: trackId !== undefined || this.hasDownload(job, metadata) }
     })
   }
 
@@ -197,18 +198,26 @@ export class DownloadManager {
   }
 
   async analyze(value: unknown): Promise<void> {
-    const link = this.provider.recognize(value)
+    if (typeof value !== 'string' || value.length > 2048) throw new Error('Введите HTTPS-ссылку на запись.')
+    const url = URL.parse(value.trim())
+    const provider = url?.protocol === 'https:' &&
+      this.providers.find(candidate => candidate.hosts.includes(url.hostname))
+    if (!provider) {
+      const supported = this.providers.map(candidate => sourceNames[candidate.id]).join(', ')
+      throw new Error(`Поддерживаются ссылки HTTPS на записи ${supported}.`)
+    }
+    const link = provider.recognize(value)
     await this.ready()
     this.assertCapacity()
     if (this.jobs.size >= maxJobs) throw new Error('Достигнут предел журнала загрузок. Закройте ненужные задачи.')
     const id = randomUUID()
-    const job: Job = { snapshot: { id, url: link.url, status: 'waiting' }, link, controller: new AbortController() }
+    const job: Job = { snapshot: { id, url: link.url, status: 'waiting' }, provider, link, controller: new AbortController() }
     this.jobs.set(id, job)
     this.enqueue(job, async () => {
       job.snapshot.status = 'analyzing'
       const signal = AbortSignal.any([job.controller.signal, AbortSignal.timeout(75_000)])
       await this.stage(async directory => {
-        job.analysis = await this.provider.analyze(link, directory, signal)
+        job.analysis = await provider.analyze(link, directory, signal)
       })
       signal.throwIfAborted()
       const { metadata, cover } = job.analysis!
@@ -219,8 +228,9 @@ export class DownloadManager {
     })
   }
 
-  private hasDownload(job: Job, sourceId: string): boolean {
-    return [...this.jobs.values()].some(other => other !== job && other.snapshot.metadata?.sourceId === sourceId &&
+  private hasDownload(job: Job, metadata: SourceMetadata): boolean {
+    return [...this.jobs.values()].some(other => other !== job && other.snapshot.metadata?.provider === metadata.provider &&
+      other.snapshot.metadata.sourceId === metadata.sourceId &&
       (other.snapshot.status === 'completed' || other.snapshot.edits !== undefined &&
         ['waiting', 'downloading', 'processing'].includes(other.snapshot.status)))
   }
@@ -231,10 +241,10 @@ export class DownloadManager {
     this.assertCapacity()
     const job = this.get(id)
     const analysis = job.analysis
-    if (job.snapshot.status !== 'ready' || !analysis?.original || !analysis.metadata.downloadFormat) {
+    if (job.snapshot.status !== 'ready' || !job.provider.download || !analysis?.original || !analysis.metadata.downloadFormat) {
       throw new Error('Запись недоступна для загрузки.')
     }
-    if (this.library.getExternalTrackId(analysis.metadata) || this.hasDownload(job, analysis.metadata.sourceId)) {
+    if (this.library.getExternalTrackId(analysis.metadata) || this.hasDownload(job, analysis.metadata)) {
       throw new Error('Эта запись уже есть в библиотеке или менеджере загрузок.')
     }
     if (edits.artwork === 'custom' && !job.customCover) throw new Error('Выберите файл обложки.')
@@ -253,7 +263,7 @@ export class DownloadManager {
     await this.stage(async directory => {
       const name = `audio.${format}`
       const partial = join(directory, 'audio.part')
-      await this.provider.download(job.link, analysis, partial, signal, progress => { job.snapshot.progress = progress })
+      await job.provider.download!(job.link, analysis, partial, signal, progress => { job.snapshot.progress = progress })
       signal.throwIfAborted()
       job.snapshot.status = 'processing'
       job.snapshot.progress = undefined
