@@ -9,6 +9,7 @@ import { LibraryStore } from './library-store'
 import type { LocalSource, ScanEntry } from './library-store'
 import { fileIdentity, moveKey, sameFile, sameIdentity } from './local-file'
 import type { FileIdentity } from './local-file'
+import type { RescanResult, ShortcutAction } from '../shared/contracts'
 
 interface ScannedFile {
   path: string
@@ -17,6 +18,7 @@ interface ScannedFile {
 }
 
 type CompletedImport = Extract<ImportResult, { status: 'complete' }>
+class FormatMismatch extends Error {}
 const metadataLimit = 8 * 1024 * 1024
 const metadataOptions = { skipCovers: true, maxMemoryAllocation: metadataLimit, maxMetadataEntries: 10_000 }
 
@@ -97,6 +99,12 @@ export class Library implements ListeningDataReader {
 
   getVolume(): VolumePreference { return this.store.getVolume() }
   setVolume(volume: VolumePreference): void { this.store.setVolume(volume) }
+  getWavePulse(): number { return this.store.getWavePulse() }
+  setWavePulse(intensity: number): void { this.store.setWavePulse(intensity) }
+  getMiniPinned(): boolean { return this.store.getMiniPinned() }
+  setMiniPinned(pinned: boolean): void { this.store.setMiniPinned(pinned) }
+  getShortcuts() { return this.store.getShortcuts() }
+  setShortcut(action: ShortcutAction, accelerator: string | null): void { this.store.setShortcut(action, accelerator) }
   getPlaybackSession() { return this.store.getPlaybackSession() }
   setPlaybackSession(session: PlaybackSession): void { this.store.setPlaybackSession(session) }
 
@@ -163,14 +171,39 @@ export class Library implements ListeningDataReader {
   }
 
   importFolder(folder: string): Promise<CompletedImport> {
-    const scan = this.pendingScan.then(() => this.scanFolder(folder))
+    return this.enqueueScan(async () => {
+      const root = await realpath(folder)
+      if (!(await lstat(root)).isDirectory()) throw new Error('Expected an import folder')
+      const { processed, issues } = await this.scanFolder(root)
+      return { status: 'complete', tracks: this.getTracks(), processed, issues }
+    })
+  }
+
+  rescanLibrary(): Promise<RescanResult> {
+    return this.enqueueScan(async () => {
+      const folders = this.store.getImportedFolders()
+      if (!folders.length) return { status: 'no-folders' }
+      let processed = 0
+      const issues: ImportIssue[] = []
+      for (const root of folders) {
+        const name = basename(root) || 'Корневая папка'
+        const result = await this.scanFolder(root)
+        processed += result.processed
+        for (const issue of result.issues) {
+          issues.push({ ...issue, entry: issue.entry === '.' ? name : `${name}/${issue.entry}` })
+        }
+      }
+      return { status: 'complete', tracks: this.getTracks(), processed, issues }
+    })
+  }
+
+  private enqueueScan<T>(operation: () => Promise<T>): Promise<T> {
+    const scan = this.pendingScan.then(operation)
     this.pendingScan = scan.then(() => undefined, () => undefined)
     return scan
   }
 
-  private async scanFolder(folder: string): Promise<CompletedImport> {
-    const root = await realpath(folder)
-    if (!(await lstat(root)).isDirectory()) throw new Error('Expected an import folder')
+  private async scanFolder(root: string): Promise<Pick<CompletedImport, 'processed' | 'issues'>> {
     const issues: ImportIssue[] = []
     const files: ScannedFile[] = []
 
@@ -198,15 +231,15 @@ export class Library implements ListeningDataReader {
           const canonical = await realpath(path)
           if (canonical !== path || !isWithin(root, canonical)) throw new Error('File moved')
           files.push(await this.readFile(canonical, extension === '.mp3' ? 'mp3' : 'flac'))
-        } catch {
-          issues.push({ entry: relative(root, path), reason: 'file-unreadable' })
+        } catch (error) {
+          issues.push({ entry: relative(root, path), reason: error instanceof FormatMismatch ? 'format-mismatch' : 'file-unreadable' })
         }
       }
     }
 
     await scan(root)
     await this.saveScan(root, files)
-    return { status: 'complete', tracks: this.getTracks(), processed: files.length, issues }
+    return { processed: files.length, issues }
   }
 
   private async saveScan(root: string, files: ScannedFile[]): Promise<void> {
@@ -267,8 +300,9 @@ export class Library implements ListeningDataReader {
       throw error
     })
     const container = tags.format.container?.toLowerCase()
+    if (!container) throw new Error('Unrecognized audio')
     if (format === 'flac' ? container !== 'flac' : container !== 'mpeg' || !tags.format.codec?.endsWith('Layer 3')) {
-      throw new Error('Unexpected audio format')
+      throw new FormatMismatch('Audio format does not match the file extension')
     }
     if (await realpath(path) !== path || !sameFile(identity, await lstat(path, { bigint: true }))) {
       throw new Error('File changed during import')

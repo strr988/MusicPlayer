@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
-import { readFile, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, dialog } from 'electron'
 import { verifyInterface } from './interface-smoke.mjs'
+import { verifyPlayerExperience } from './player-experience-smoke.mjs'
 
 async function eventually(check, label) {
   const deadline = Date.now() + 8_000
@@ -65,7 +66,8 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
   await waitFor(`${buttons}.some(button => button.getClientRects().length &&
     button.innerText.includes('Выбрать папку') && !button.disabled)`, 'library initialized')
   const modern = !app.isPackaged || !['0.1.1', '0.2.0', '0.3.0'].includes(app.getVersion())
-  const explainable = !app.isPackaged || app.getVersion() === '0.5.0'
+  const playerExperience = !app.isPackaged || app.getVersion() === '0.6.0'
+  const explainable = playerExperience || app.getVersion() === '0.5.0'
   const openWave = async () => {
     if (modern) await click('Моя волна')
   }
@@ -107,7 +109,10 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
   ]).sort()
   const expectedApi = phase === 'legacy-import' ? oldApi :
     app.getVersion() === '0.2.0' && app.isPackaged ? playlistApi :
-      playlistApi.concat(['getPlaybackSession', 'setPlaybackSession'], explainable ? ['getWaveRecommendations'] : []).sort()
+      playlistApi.concat(['getPlaybackSession', 'setPlaybackSession'], explainable ? ['getWaveRecommendations'] : [],
+        playerExperience ? ['getLyrics', 'openMiniPlayer', 'publishMiniState', 'onMiniVisibility',
+          'onPlaybackCommand', 'getShortcuts', 'setShortcut', 'setShortcutCapture', 'rescanLibrary',
+          'getWavePulse', 'setWavePulse'] : []).sort()
   assert.deepEqual(await run(`({
     process: typeof window.process,
     require: typeof window.require,
@@ -134,6 +139,59 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     id: row.dataset.queueEntry, title: row.firstElementChild.getAttribute('title')
   }))`)
   const setRepeat = value => choose('Режим повтора', value)
+
+  if (phase === 'library-rescan') {
+    const empty = join(folder, 'Позже')
+    await mkdir(empty)
+    await click('Обновить')
+    await waitFor('document.querySelector("main").innerText.includes("Сначала выберите папку")', 'empty profile suggests importing')
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [empty] })
+    await click('Выбрать папку')
+    await waitFor('document.querySelector("main").innerText.includes("В папке нет доступных")', 'empty folder registered')
+    const mp3 = join(folder, '01.mp3')
+    await copyFile(mp3, join(empty, 'later.mp3'))
+    let dialogs = 0
+    dialog.showOpenDialog = async () => { dialogs++; return { canceled: true, filePaths: [] } }
+    await click('Обновить')
+    await waitFor('document.querySelectorAll("tbody tr").length === 1', 'rescan discovers file in previously empty folder')
+    assert.equal(dialogs, 0)
+    return
+  }
+
+  if (phase === 'library-rescan-restart') {
+    const empty = join(folder, 'Позже')
+    const other = join(folder, 'Другая папка')
+    await mkdir(other)
+    await copyFile(join(folder, '02.flac'), join(other, '02.flac'))
+    await waitFor('document.querySelectorAll("tbody tr").length === 1', 'original folder survives restart')
+    const [original] = await run('window.musicPlayer.getTracks()')
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [other] })
+    await click('Выбрать папку')
+    await waitFor('document.querySelectorAll("tbody tr").length === 2', 'second folder imported')
+    await rename(empty, join(folder, 'Перемещённая папка'))
+    await copyFile(join(folder, '01.mp3'), join(other, 'new.mp3'))
+    let dialogs = 0
+    dialog.showOpenDialog = async () => { dialogs++; return { canceled: true, filePaths: [] } }
+    await click('Обновить')
+    await waitFor('document.querySelectorAll("tbody tr").length === 3 && !!document.querySelector(".unavailable")', 'rescan discovers new track and marks missing folder')
+    const tracks = await run('window.musicPlayer.getTracks()')
+    assert.equal(tracks.find(track => track.id === original.id)?.available, false)
+    await run('document.querySelector(".import-result summary").click()')
+    assert.match(await run('document.querySelector(".import-result").innerText'), /Позже — папка недоступна/)
+    await click('Обновить')
+    await waitFor('!document.querySelector(".library-folder-actions .secondary").disabled', 'repeat rescan completes')
+    assert.deepEqual(await run('window.musicPlayer.getTracks()'), tracks)
+    assert.equal(dialogs, 0)
+    return
+  }
+
+  if (phase === 'experience' || phase === 'experience-restart') {
+    await verifyPlayerExperience({
+      player, folder, run, click, waitFor, waitForAudio, choose, finishTrack, sessionState,
+      restart: phase === 'experience-restart',
+    })
+    return
+  }
 
   if (phase === 'interface') {
     await verifyInterface({ player, run, click, waitFor, waitForAudio, folder, pendingRows })
@@ -542,7 +600,11 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
         window.musicPlayer.getVolume(), window.musicPlayer.setVolume(0, true),
         window.musicPlayer.getPlaylists(), window.musicPlayer.createPlaylist('test'),
         window.musicPlayer.getWaveMode(), window.musicPlayer.setWaveMode('discovery'),
-        window.musicPlayer.getPlaybackSession(), window.musicPlayer.setPlaybackSession({})]
+        window.musicPlayer.getPlaybackSession(), window.musicPlayer.setPlaybackSession({}),
+        window.musicPlayer.getLyrics("file:///secret"), window.musicPlayer.openMiniPlayer(),
+        window.musicPlayer.getShortcuts(), window.musicPlayer.setShortcut("mute", null),
+        window.musicPlayer.publishMiniState({}), window.musicPlayer.rescanLibrary(), window.musicPlayer.setShortcutCapture(true),
+        window.musicPlayer.getWavePulse(), window.musicPlayer.setWavePulse(0)]
         .map(result => result.then(() => 'unexpectedly accepted', error => error.message))
     )`)
     for (const refusal of refusals) assert.match(refusal, /IPC sender denied/)
@@ -563,7 +625,7 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
   assert.match(library, /Test Tone FLAC/)
   assert.match(library, /Fixture Artist/)
   assert.match(library, /Fixture Album/)
-  assert.match(library, /Результат импорта · ошибок: 1/)
+  assert.match(library, /Результат сканирования · ошибок: 1/)
   await run('document.querySelector(".import-result summary").click()')
   assert.match(await run('document.querySelector(".import-result").innerText'), /broken\.mp3 — файл не прочитан/)
   assert.deepEqual(await run(`(async () => ({

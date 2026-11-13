@@ -1,12 +1,21 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { channels } from '../shared/contracts'
-import type { MusicPlayerApi } from '../shared/contracts'
+import type { IpcRendererEvent } from 'electron'
+import type { MiniPlayerApi, MusicPlayerApi } from '../shared/contracts'
+
+function subscribe<T>(channel: string, callback: (value: T) => void): () => void {
+  const listener = (_event: IpcRendererEvent, value: T) => callback(value)
+  ipcRenderer.on(channel, listener)
+  return () => { ipcRenderer.removeListener(channel, listener) }
+}
 
 const api: MusicPlayerApi = {
   getWaveQueue: () => ipcRenderer.invoke(channels.getWaveQueue),
   getWaveRecommendations: () => ipcRenderer.invoke(channels.getWaveRecommendations),
   getWaveMode: () => ipcRenderer.invoke(channels.getWaveMode),
   setWaveMode: (mode) => ipcRenderer.invoke(channels.setWaveMode, mode),
+  getWavePulse: () => ipcRenderer.invoke(channels.getWavePulse),
+  setWavePulse: (intensity) => ipcRenderer.invoke(channels.setWavePulse, intensity),
   getPlaylists: () => ipcRenderer.invoke(channels.getPlaylists),
   createPlaylist: (name) => ipcRenderer.invoke(channels.createPlaylist, name),
   renamePlaylist: (id, name) => ipcRenderer.invoke(channels.renamePlaylist, id, name),
@@ -18,12 +27,30 @@ const api: MusicPlayerApi = {
   setTrackPreference: (trackId, liked) => ipcRenderer.invoke(channels.setTrackPreference, trackId, liked),
   recordPlaybackEvent: (event) => ipcRenderer.invoke(channels.recordPlaybackEvent, event),
   importFolder: () => ipcRenderer.invoke(channels.importFolder),
+  rescanLibrary: () => ipcRenderer.invoke(channels.rescanLibrary),
   getTracks: () => ipcRenderer.invoke(channels.getTracks),
   getPlayableSource: (trackId) => ipcRenderer.invoke(channels.getPlayableSource, trackId),
   getVolume: () => ipcRenderer.invoke(channels.getVolume),
   setVolume: (level, muted) => ipcRenderer.invoke(channels.setVolume, level, muted),
   getPlaybackSession: () => ipcRenderer.invoke(channels.getPlaybackSession),
   setPlaybackSession: (session) => ipcRenderer.invoke(channels.setPlaybackSession, session),
+  getLyrics: (id) => ipcRenderer.invoke(channels.getLyrics, id),
+  openMiniPlayer: () => ipcRenderer.invoke(channels.openMiniPlayer),
+  publishMiniState: (state) => ipcRenderer.invoke(channels.publishMiniState, state),
+  onMiniVisibility: (callback) => subscribe(channels.miniVisibility, callback),
+  onPlaybackCommand: (callback) => subscribe(channels.playbackCommand, callback),
+  getShortcuts: () => ipcRenderer.invoke(channels.getShortcuts),
+  setShortcut: (action, accelerator) => ipcRenderer.invoke(channels.setShortcut, action, accelerator),
+  setShortcutCapture: (capturing) => ipcRenderer.invoke(channels.setShortcutCapture, capturing),
 }
 
-contextBridge.exposeInMainWorld('musicPlayer', api)
+const mini: MiniPlayerApi = {
+  getState: () => ipcRenderer.invoke(channels.getMiniState),
+  onState: (callback) => subscribe(channels.miniState, callback),
+  control: (command) => ipcRenderer.invoke(channels.controlMiniPlayback, command),
+  setPinned: (pinned) => ipcRenderer.invoke(channels.setMiniPinned, pinned),
+  showMain: () => ipcRenderer.invoke(channels.showMainPlayer),
+}
+
+if (process.argv.includes('--music-player-mini')) contextBridge.exposeInMainWorld('miniPlayer', mini)
+else contextBridge.exposeInMainWorld('musicPlayer', api)

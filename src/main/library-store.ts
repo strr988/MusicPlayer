@@ -1,9 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
-import { playerOrigin, playlistNameLimit } from '../shared/contracts'
+import { defaultWavePulse, maxWavePulse, playerOrigin, playlistNameLimit } from '../shared/contracts'
 import type { Track, LibraryTrack, ListeningData, ListeningDataReader, PlaybackEventInput, PlaybackSession, Playlist, TrackPreference, VolumePreference, WaveMode } from '../shared/contracts'
 import type { FileIdentity } from './local-file'
 import { validatePlaybackSession } from './playback-session'
+import { removeLegacyDemo } from './legacy-demo'
+import type { ShortcutAction } from '../shared/contracts'
 
 const migrations = [
   `CREATE TABLE tracks (
@@ -73,6 +75,21 @@ const migrations = [
     id INTEGER PRIMARY KEY CHECK (id = 1),
     snapshot TEXT NOT NULL
   ) STRICT;`,
+  `CREATE TABLE mini_player (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    pinned INTEGER NOT NULL CHECK (pinned IN (0, 1))
+  ) STRICT;
+  INSERT INTO mini_player VALUES (1, 0);
+  CREATE TABLE global_shortcuts (
+    action TEXT PRIMARY KEY NOT NULL CHECK (action IN ('toggle', 'next', 'previous', 'volumeUp', 'volumeDown', 'mute')),
+    accelerator TEXT NOT NULL UNIQUE
+  ) STRICT;`,
+  removeLegacyDemo,
+  `CREATE TABLE appearance_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    wave_pulse INTEGER NOT NULL CHECK (wave_pulse BETWEEN 0 AND ${maxWavePulse})
+  ) STRICT;
+  INSERT INTO appearance_settings VALUES (1, ${defaultWavePulse});`,
 ]
 
 export interface LocalSource {
@@ -142,7 +159,9 @@ export class LibraryStore implements ListeningDataReader {
       }
       this.transaction(() => {
         for (let index = version; index < migrations.length; index++) {
-          this.db.exec(migrations[index])
+          const migration = migrations[index]
+          if (typeof migration === 'string') this.db.exec(migration)
+          else migration(this.db)
           this.db.exec(`PRAGMA user_version = ${index + 1}`)
         }
       })
@@ -206,6 +225,33 @@ export class LibraryStore implements ListeningDataReader {
 
   setVolume({ level, muted }: VolumePreference): void {
     this.db.prepare('UPDATE playback_volume SET level = ?, muted = ? WHERE id = 1').run(level, Number(muted))
+  }
+
+  getMiniPinned(): boolean {
+    return this.db.prepare('SELECT pinned FROM mini_player WHERE id = 1').get()?.pinned === 1
+  }
+
+  getWavePulse(): number {
+    return this.db.prepare('SELECT wave_pulse FROM appearance_settings WHERE id = 1').get()!.wave_pulse as number
+  }
+
+  setWavePulse(intensity: number): void {
+    this.db.prepare('UPDATE appearance_settings SET wave_pulse = ? WHERE id = 1').run(intensity)
+  }
+
+  setMiniPinned(pinned: boolean): void {
+    this.db.prepare('UPDATE mini_player SET pinned = ? WHERE id = 1').run(Number(pinned))
+  }
+
+  getShortcuts(): Partial<Record<ShortcutAction, string>> {
+    const rows = this.db.prepare('SELECT action, accelerator FROM global_shortcuts').all()
+    return Object.fromEntries(rows.map(row => [row.action, row.accelerator]))
+  }
+
+  setShortcut(action: ShortcutAction, accelerator: string | null): void {
+    if (accelerator === null) this.db.prepare('DELETE FROM global_shortcuts WHERE action = ?').run(action)
+    else this.db.prepare(`INSERT INTO global_shortcuts VALUES (?, ?)
+      ON CONFLICT (action) DO UPDATE SET accelerator = excluded.accelerator`).run(action, accelerator)
   }
 
   getWaveMode(): WaveMode {
@@ -304,6 +350,10 @@ export class LibraryStore implements ListeningDataReader {
 
   getLocalSources(): LocalSource[] {
     return (this.db.prepare(selectLocalSources).all() as unknown as LocalSourceRow[]).map(toLocalSource)
+  }
+
+  getImportedFolders(): string[] {
+    return this.db.prepare('SELECT path FROM imported_folders ORDER BY rowid').all().map(row => row.path as string)
   }
 
   getLocalSource(id: string): LocalSource | undefined {

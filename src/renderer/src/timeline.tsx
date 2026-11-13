@@ -14,6 +14,7 @@ export function Timeline({ audio, duration, trackDuration, restoredPosition, see
     const element = audio.current
     if (!element) return
     const update = () => setPosition(element.currentTime)
+    update()
     const events = ['timeupdate', 'seeking', 'emptied'] as const
     for (const event of events) element.addEventListener(event, update)
     return () => { for (const event of events) element.removeEventListener(event, update) }

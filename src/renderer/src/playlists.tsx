@@ -137,7 +137,7 @@ export function Playlists({ active, tracks, playbackReady, request, onPlay, refr
       {selected && (
         <label className="playlist-picker">
           <span className="muted">Ваши плейлисты · {playlists?.length}</span>
-          <select aria-label="Выбрать плейлист" value={selected.id} disabled={pending}
+          <select className="player-select" aria-label="Выбрать плейлист" value={selected.id} disabled={pending}
             onChange={event => { setSelectedId(event.currentTarget.value); setEditor(null); setError('') }}>
             {playlists?.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
           </select>
@@ -250,7 +250,7 @@ function PlaylistTracks({ active, actions, confirmation, addForm, playlist, trac
         <div className="playlist-toolbar">
           <input type="search" aria-label="Найти трек для добавления" placeholder="Найти трек в библиотеке"
             value={query} onChange={event => setQuery(event.currentTarget.value)} />
-          <select aria-label="Трек для добавления" value={candidate?.id ?? ''} disabled={pending || !candidates.length}
+          <select className="player-select" aria-label="Трек для добавления" value={candidate?.id ?? ''} disabled={pending || !candidates.length}
             title={candidate?.title}
             onChange={event => setCandidateId(event.currentTarget.value)}>
             <option value="">{candidates.length ? 'Выберите трек' : 'Нет доступных треков для добавления'}</option>

@@ -61,6 +61,18 @@ describe('local library', () => {
     ])
     expect(result.issues).toEqual([])
   })
+
+  it('distinguishes a readable file with the wrong audio format from an unreadable file', async () => {
+    // ADTS headers let the metadata parser identify AAC without a real recording.
+    const frame = Buffer.alloc(20)
+    frame.set([0xff, 0xf1, 0x50, 0x80, 0x02, 0x9f, 0xfc])
+    await writeFile(join(folder, 'wrong.mp3'), Buffer.concat(Array(12).fill(frame)))
+    await writeFile(join(folder, 'broken.mp3'), 'broken')
+    expect(await library.importFolder(folder)).toMatchObject({
+      tracks: [],
+      issues: [{ entry: 'broken.mp3', reason: 'file-unreadable' }, { entry: 'wrong.mp3', reason: 'format-mismatch' }],
+    })
+  })
 })
 
 describe('local audio', () => {

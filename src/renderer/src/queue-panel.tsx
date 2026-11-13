@@ -19,11 +19,12 @@ export function TrackQueueActions({ title, disabled, add }: {
   </span>
 }
 
-export function QueuePanel({ playback, open, close, closeButton }: {
+export function QueuePanel({ playback, open, close, closeButton, id = 'playback-queue' }: {
   playback: ReturnType<typeof usePlayback>
   open: boolean
   close: () => void
   closeButton: RefObject<HTMLButtonElement | null>
+  id?: string
 }) {
   const { queue, entriesById, tracksById, track, loading, ready, mode } = playback
   const [requestedPage, setPage] = useState(0)
@@ -55,10 +56,10 @@ export function QueuePanel({ playback, open, close, closeButton }: {
     playback.move(id, offset)
   }
 
-  return <aside id="playback-queue" className="queue-panel" aria-labelledby="queue-heading" hidden={!open}>
+  return <aside id={id} className="queue-panel" aria-labelledby={id + '-heading'} hidden={!open}>
     {open && <>
       <div className="queue-heading">
-        <h2 id="queue-heading">Очередь</h2>
+        <h2 id={id + '-heading'}>Очередь</h2>
         <IconButton ref={closeButton} icon="close" label="Закрыть очередь" onClick={close} />
       </div>
       <div className="queue-body" ref={body}>

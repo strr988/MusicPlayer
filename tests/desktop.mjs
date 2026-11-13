@@ -50,6 +50,12 @@ test('built Electron app imports, plays and restores its library across restarts
   assert.deepEqual(await readFile(join(fixtures, '01.mp3')), originalMp3)
 })
 
+test('library refresh rescans saved folders without opening a dialog', { timeout: 75_000 }, async t => {
+  const { run } = await prepareElectron(t)
+  await run('library-rescan')
+  await run('library-rescan-restart')
+})
+
 test('personal wave plays offline, reacts to feedback and survives a restart with missing files', { timeout: 75_000 }, async (t) => {
   const { fixtures, run } = await prepareElectron(t)
   await run('wave-import')
@@ -81,6 +87,15 @@ test('Wave honors manual queue priorities, feedback and Media Session actions', 
 test('interface preserves playback and keyboard focus at four desktop sizes', { timeout: 40_000 }, async (t) => {
   const { run } = await prepareElectron(t, { withCatalog: true })
   await run('interface')
+})
+
+test('lyrics, mini playback, global registrations and sleep timer work in Electron', { timeout: 75_000 }, async (t) => {
+  const { fixtures, run } = await prepareElectron(t, { withArtwork: true })
+  await copyFile(new URL('./fixtures/01-tone.lrc', import.meta.url), join(fixtures, '01.lrc'))
+  await copyFile(new URL('./fixtures/02-tone.txt', import.meta.url), join(fixtures, '02.txt'))
+  const { stdout } = await run('experience')
+  t.diagnostic(stdout.trim())
+  await run('experience-restart')
 })
 
 test('offline blind pilot plays local audio and exports only explicitly submitted answers', { timeout: 40_000 }, async t => {

@@ -9,16 +9,23 @@ import { ListPager, pageSize } from './list-pager'
 import { formatTime } from './playback'
 import { TrackQueueActions } from './queue-panel'
 
-export function Library({ tracks, loading, loadFailed, retryLoad, importing, notice, issues, importFolder,
+const issueLabels: Record<ImportIssue['reason'], string> = {
+  'directory-unreadable': 'папка недоступна',
+  'file-unreadable': 'файл не прочитан',
+  'format-mismatch': 'формат аудио не соответствует расширению файла',
+}
+
+export function Library({ tracks, loading, loadFailed, retryLoad, scan, notice, issues, importFolder, rescanLibrary,
   activeId, playing, ready, likedIds, likeDisabled, toggleLike, select, addToQueue, addToPlaylist }: {
   tracks: LibraryTrack[]
   loading: boolean
   loadFailed: boolean
   retryLoad: () => void
-  importing: boolean
+  scan: 'import' | 'rescan' | null
   notice?: { text: string; processed?: number }
   issues: ImportIssue[]
   importFolder: () => void
+  rescanLibrary: () => void
   activeId?: string
   playing: boolean
   ready: boolean
@@ -36,10 +43,15 @@ export function Library({ tracks, loading, loadFailed, retryLoad, importing, not
   const shown = useMemo(() => visibleTracks(tracks, query, sortField, direction), [tracks, query, sortField, direction])
   const page = Math.min(requestedPage, Math.max(0, Math.ceil(shown.length / pageSize) - 1))
   const tableStart = useRef<HTMLDivElement>(null)
-  const title = importing ? 'Импорт…' : 'Выбрать папку'
-  const importButton = <button type="button" className="primary" onClick={importFolder} disabled={importing || loading}>
-    <Icon name="folder" />{title}
-  </button>
+  const actions = <div className="library-folder-actions">
+    <button type="button" className="secondary" onClick={rescanLibrary} disabled={!!scan || loading}
+      title="Перечитать импортированные папки">
+      <Icon name="refresh" />{scan === 'rescan' ? 'Обновляем…' : 'Обновить'}
+    </button>
+    <button type="button" className="primary" onClick={importFolder} disabled={!!scan || loading}>
+      <Icon name="folder" />{scan === 'import' ? 'Импорт…' : 'Выбрать папку'}
+    </button>
+  </div>
   const sortState = (field: SortField) => sortField === field ? (direction === 'asc' ? 'ascending' : 'descending') : undefined
 
   return <>
@@ -50,23 +62,21 @@ export function Library({ tracks, loading, loadFailed, retryLoad, importing, not
           Треков: {shown.length}{query.trim() && ' из ' + tracks.length}
         </p>}
       </div>
-      {tracks.length > 0 && importButton}
+      {tracks.length > 0 && actions}
     </header>
-    {importing && <p className="notice" role="status">Читаем папку…</p>}
-    {!importing && notice && <p className={notice.processed ? 'sr-only' : 'notice'} role="status">{notice.text}</p>}
-    {!importing && (notice?.processed || issues.length > 0) ? <details className="import-result">
-      <summary className={issues.length > 0 ? 'danger' : undefined}>
-        {issues.length > 0 ? `Результат импорта · ошибок: ${issues.length}` : 'Результат импорта'}
-      </summary>
+    {scan && <p className="notice" role="status">{scan === 'rescan' ? 'Перечитываем импортированные папки…' : 'Читаем папку…'}</p>}
+    {!scan && notice && <p className={notice.processed ? 'sr-only' : 'notice'} role="status">{notice.text}</p>}
+    {!scan && issues.length > 0 && <details className="import-result">
+      <summary className="danger">Результат сканирования · ошибок: {issues.length}</summary>
       {notice?.processed && <p>{notice.text}</p>}
-      {issues.length > 0 && <ul>{issues.map(issue => <li key={issue.entry}>
-        {issue.entry} — {issue.reason === 'directory-unreadable' ? 'папка недоступна' : 'файл не прочитан'}
-      </li>)}</ul>}
-    </details> : null}
+      <ul>{issues.map((issue, index) => <li key={index}>
+        {issue.entry} — {issueLabels[issue.reason]}
+      </li>)}</ul>
+    </details>}
     {loading ? <p className="notice" role="status">Загружаем библиотеку…</p> :
       loadFailed ? <EmptyState icon="library" title="Не удалось открыть библиотеку"
         action={<button type="button" className="primary" onClick={retryLoad}>Повторить загрузку</button>} /> :
-      tracks.length === 0 ? <EmptyState icon="music" title="Здесь появится ваша музыка" action={importButton}>
+      tracks.length === 0 ? <EmptyState icon="music" title="Здесь появится ваша музыка" action={actions}>
         Выберите папку с файлами MP3 или FLAC.
       </EmptyState> : <>
         <div className="library-tools">
@@ -77,7 +87,7 @@ export function Library({ tracks, loading, loadFailed, retryLoad, importing, not
           </label>
           <label className="sort-control">
             <span aria-hidden="true">Сортировка</span>
-            <select aria-label="Сортировка" value={sortField} onChange={event => {
+            <select className="player-select" aria-label="Сортировка" value={sortField} onChange={event => {
               setSortField(event.currentTarget.value as SortField | '')
               setPage(0)
             }}>

@@ -22,7 +22,9 @@ export async function verifyInterface({ player, run, click, waitFor, waitForAudi
   })()`
   const key = keyCode => {
     webContents.sendInputEvent({ type: 'keyDown', keyCode })
-    if (keyCode === 'Enter') webContents.sendInputEvent({ type: 'char', keyCode: '\r' })
+    if (keyCode === 'Enter' || keyCode === 'Space') {
+      webContents.sendInputEvent({ type: 'char', keyCode: keyCode === 'Enter' ? '\r' : ' ' })
+    }
     webContents.sendInputEvent({ type: 'keyUp', keyCode })
   }
   const focus = selector => run('document.querySelector(' + JSON.stringify(selector) + ').focus()')
@@ -38,10 +40,46 @@ export async function verifyInterface({ player, run, click, waitFor, waitForAudi
   }
   const capture = async name => {
     if (!output) return
+    await run('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))')
     await mkdir(output, { recursive: true })
     const image = await webContents.capturePage()
     assert.equal(image.isEmpty(), false)
     await writeFile(join(output, name + '.png'), image.toPNG())
+  }
+  const openPicker = async (selector, direction) => {
+    const target = 'document.querySelector(' + JSON.stringify(selector) + ')'
+    await waitFor(target + ' && !' + target + '.disabled', 'picker is enabled')
+    await focus(selector)
+    key('Space')
+    await waitFor(target + '.matches(":open")', 'picker opens by keyboard')
+    const layout = await run(`(() => {
+      const select = ${target}
+      const picker = getComputedStyle(select, '::picker(select)')
+      const control = select.getBoundingClientRect()
+      const first = select.options[0].getBoundingClientRect()
+      return {
+        appearance: picker.appearance, background: picker.backgroundColor,
+        expectedBackground: getComputedStyle(document.querySelector('.player')).backgroundColor,
+        fits: first.width > 0 && first.left >= 0 && first.right <= innerWidth && first.top >= 0 && first.bottom <= innerHeight,
+        above: first.bottom <= control.top, below: first.top >= control.bottom,
+      }
+    })()`)
+    assert.equal(layout.appearance, 'base-select', selector)
+    assert.equal(layout.background, layout.expectedBackground, selector)
+    assert.ok(layout.fits && (direction ? layout[direction] : layout.above || layout.below), JSON.stringify({ selector, ...layout }))
+  }
+  const closePicker = async selector => {
+    key('Escape')
+    const target = 'document.querySelector(' + JSON.stringify(selector) + ')'
+    await waitFor('!' + target + '.matches(":open") && document.activeElement === ' + target, 'Escape closes picker and restores focus')
+  }
+  const mouseClick = async selector => {
+    const point = await run(`(() => {
+      const { x, y, width, height } = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect()
+      return { x: Math.round(x + width / 2), y: Math.round(y + height / 2) }
+    })()`)
+    webContents.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, ...point })
+    webContents.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, ...point })
   }
   const openQueue = async () => {
     await focus(queueToggle)
@@ -63,6 +101,16 @@ export async function verifyInterface({ player, run, click, waitFor, waitForAudi
   const libraryNext = libraryPager + ' [aria-label="Следующая страница"]'
   player.focus()
   webContents.focus()
+  const sortPicker = 'select[aria-label="Сортировка"]'
+  await openPicker(sortPicker, 'below')
+  await capture('10-sort-picker')
+  key('Down')
+  key('Enter')
+  await waitFor('document.querySelector(".sort-control select").value === "title"', 'sorting choice applies by keyboard')
+  await openPicker(sortPicker)
+  key('Up')
+  key('Enter')
+  await waitFor('document.querySelector(".sort-control select").value === ""', 'restore import order')
   await focus(libraryNext)
   key('Enter')
   await waitFor('document.querySelectorAll("tbody tr").length === ' + (catalogSize - 100), 'second page renders the remaining tracks')
@@ -73,10 +121,7 @@ export async function verifyInterface({ player, run, click, waitFor, waitForAudi
   await setInput('.search-control input', '')
   await waitFor('document.querySelector("tbody .track-name").textContent === ' + JSON.stringify(longTitle), 'clearing search returns to first page')
   await run('document.querySelector("main").scrollTop = 0')
-  assert.equal(await run('document.querySelector(".import-result").open'), false)
-  await run('document.querySelector(".import-result summary").click()')
-  assert.match(await run('document.querySelector(".import-result").innerText'), new RegExp('Файлов обработано: ' + catalogSize))
-  await run('document.querySelector(".import-result summary").click()')
+  assert.equal(await run('document.querySelector(".import-result") === null'), true)
 
   await waitFor('document.querySelector("tbody img")?.naturalWidth > 0', 'embedded cover decoded')
   assert.equal(await run('!document.querySelector("tbody tr:first-child img") && ' +
@@ -172,12 +217,28 @@ export async function verifyInterface({ player, run, click, waitFor, waitForAudi
       await focus('.queue-list li:first-child [data-move="-1"]')
       key('Enter')
       await waitFor('document.activeElement.closest("li")?.dataset.queueEntry === ' +
-        JSON.stringify(rows[99].id), 'moving up across pages keeps the moved row focused')
+        JSON.stringify(rows[99].id) + ' && document.querySelectorAll(".queue-list li").length === 100',
+      'moving up across pages keeps the moved row focused')
       assert.deepEqual(await pendingRows(), firstPage)
     }
     if (width === 1280) await capture('03-queue-docked-1280x800')
     key('Escape')
     await waitFor('document.querySelector(".queue-panel").hidden && document.activeElement.matches(".queue-toggle")', 'Escape closes queue and restores focus')
+    if (width === 620) {
+      const repeatPicker = 'select[aria-label="Режим повтора"]'
+      await openPicker(repeatPicker, 'above')
+      await capture('11-repeat-picker')
+      await closePicker(repeatPicker)
+      await mouseClick(repeatPicker)
+      await waitFor('document.querySelector(".repeat-control select").matches(":open")', 'repeat opens by mouse')
+      await mouseClick(repeatPicker + ' option[value="one"]')
+      await waitFor('document.querySelector(".repeat-control select").value === "one"', 'repeat choice applies by mouse')
+      await openPicker(repeatPicker, 'above')
+      key('Up')
+      key('Up')
+      key('Enter')
+      await waitFor('document.querySelector(".repeat-control select").value === "off"', 'repeat restored to off')
+    }
   }
   assert.deepEqual(await events(), initialEvents)
   assert.equal(await run('document.querySelectorAll("audio").length'), 1)
@@ -207,6 +268,14 @@ export async function verifyInterface({ player, run, click, waitFor, waitForAudi
   await waitFor('document.querySelector(".playlist-identity h2").textContent === ' + JSON.stringify(longName), 'long playlist name is shown in the detail header')
   for (const [width, height] of [[620, 700], [900, 700], [1280, 800], [1480, 1024]]) await size(width, height)
   await size(620, 700)
+  const playlistPicker = 'select[aria-label="Выбрать плейлист"]'
+  await openPicker(playlistPicker)
+  await capture('12-playlist-picker')
+  await closePicker(playlistPicker)
+  const trackPicker = 'select[aria-label="Трек для добавления"]'
+  await openPicker(trackPicker)
+  await capture('13-track-picker')
+  await closePicker(trackPicker)
   await click('Удалить плейлист')
   await waitFor('document.activeElement.textContent === "Отмена"', 'delete confirmation starts on the safe action')
   assert.match(await run('document.querySelector(".playlist-confirm").innerText'), new RegExp(longName))
@@ -216,6 +285,11 @@ export async function verifyInterface({ player, run, click, waitFor, waitForAudi
   assert.equal(await run('document.querySelectorAll(".playlist-track").length'), 3)
 
   await size(900, 700)
+  await click('Настройки')
+  const pulse = 'input[aria-label="Сила пульсации"]'
+  await waitFor('document.querySelector(' + JSON.stringify(pulse) + ')?.disabled === false', 'pulse slider ready')
+  await setInput(pulse, '0')
+  await waitFor('(async () => (await window.musicPlayer.getWavePulse()) === 0)()', 'pulse can be disabled')
   await click('Моя волна')
   await focus('input[name="wave-mode"]:checked')
   key('Right')
@@ -224,11 +298,23 @@ export async function verifyInterface({ player, run, click, waitFor, waitForAudi
   assert.deepEqual(await events(), initialEvents)
   await click('Запустить волну')
   await waitForAudio('!audio.paused && audio.currentTime > 0.1', 'Wave starts from its dedicated section')
+  assert.equal(await run('getComputedStyle(document.querySelector(".wave-art"), "::before").opacity'), '0')
+  await click('Настройки')
+  await setInput(pulse, '300')
+  await click('Моя волна')
+  assert.equal(await run('document.querySelector(".wave-art").style.getPropertyValue("--wave-intensity")'), '3')
+  await waitFor('Number(document.querySelector(".wave-art").style.getPropertyValue("--wave-level")) > 0.01', 'Wave pulses from decoded audio')
+  assert.equal(await run('document.querySelector("audio") === window.originalAudio'), true)
+  await click('Без звука')
+  await waitFor('Number(document.querySelector(".wave-art").style.getPropertyValue("--wave-level")) < 0.01', 'Wave settles when muted')
+  await click('Без звука')
+  await waitFor('Number(document.querySelector(".wave-art").style.getPropertyValue("--wave-level")) > 0.01', 'Wave follows audio after unmuting')
   await waitFor('document.querySelector(".wave-status[role=status]")?.innerText.includes("Сейчас играет")', 'Wave reports active playback')
   await capture('02-wave-900x700')
   await waitFor('!!document.querySelector(".wave-explanation summary")', 'Wave explanation is available')
   await click('Пауза')
   await waitForAudio('audio.paused', 'Pause before capturing the explanation')
+  await waitFor('!document.querySelector(".wave-art").style.getPropertyValue("--wave-level")', 'Wave pulse stops with playback')
   await run('document.querySelector(".wave-explanation summary").click()')
   await waitFor('document.querySelector(".wave-explanation").open', 'short explanation opens')
   await capture('08-wave-explanation-900x700')

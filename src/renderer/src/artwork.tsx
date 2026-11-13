@@ -6,7 +6,11 @@ const observer = new IntersectionObserver(entries => {
   for (const { target, isIntersecting } of entries) visibilityListeners.get(target)?.(isIntersecting)
 })
 
-export function Artwork({ url, eager = false }: { url: string | null; eager?: boolean }) {
+export function Artwork({ url, eager = false, onLoad }: {
+  url: string | null
+  eager?: boolean
+  onLoad?: (image: HTMLImageElement) => void
+}) {
   const [failed, setFailed] = useState(false)
   const [visible, setVisible] = useState(false)
   const observe = useCallback((element: HTMLSpanElement | null) => {
@@ -23,7 +27,8 @@ export function Artwork({ url, eager = false }: { url: string | null; eager?: bo
     <span className="artwork" aria-hidden="true" ref={url && !failed && !eager ? observe : undefined}>
       <Icon name="music" />
       {url && !failed && (eager || visible) && (
-        <img src={url} alt="" decoding="async" onError={() => setFailed(true)} />
+        <img src={url} alt="" decoding="async" onLoad={onLoad && (event => onLoad(event.currentTarget))}
+          onError={() => setFailed(true)} />
       )}
     </span>
   )

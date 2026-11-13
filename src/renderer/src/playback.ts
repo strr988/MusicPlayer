@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
 import { queueEntryLimit } from '../../shared/contracts'
 import type { LibraryTrack, PlaybackEventInput, PlaybackQueue, Playlist, QueueEntry, QueueSource, RepeatMode, VolumePreference, WaveDecision, WaveRecommendations } from '../../shared/contracts'
 import { ListeningSession } from './listening-session'
 import { emptyQueue, enqueue, goBack, movePending, previousEntry, removePending, repeatQueue, setShuffle, startQueue, takePending } from './playback-queue'
+import { fadedVolume, sleepAtTrackEnd, sleepStatus } from './sleep-timer'
+import type { SleepTimer } from './sleep-timer'
 
 export function formatTime(seconds: number | null): string {
   if (seconds === null) return '—'
@@ -24,14 +26,17 @@ export interface RecommendationExplanation {
 export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: string) => void) {
   const audio = useRef<HTMLAudioElement>(null)
   const [volume, setVolume] = useState<VolumePreference | null>(null)
+  const volumeRef = useRef<VolumePreference | null>(null)
+  const gain = useRef(1)
   const [volumeError, setVolumeError] = useState('')
   const volumeWrite = useRef(0)
   useEffect(() => {
     let active = true
     const apply = (preference: VolumePreference) => {
       if (!active || !audio.current) return
-      audio.current.volume = preference.level
+      audio.current.volume = fadedVolume(preference.level, gain.current)
       audio.current.muted = preference.muted
+      volumeRef.current = preference
       setVolume(preference)
     }
     void window.musicPlayer.getVolume().then(apply).catch(() => {
@@ -45,8 +50,9 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
   function changeVolume(preference: VolumePreference): void {
     const element = audio.current
     if (!element) return
-    element.volume = preference.level
+    element.volume = fadedVolume(preference.level, gain.current)
     element.muted = preference.muted
+    volumeRef.current = preference
     setVolume(preference)
     setVolumeError('')
     const revision = ++volumeWrite.current
@@ -66,6 +72,9 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
 
   const [queue, setQueue] = useState(() => emptyQueue())
   const queueRef = useRef(queue)
+  const [sleep, setSleep] = useState<SleepTimer | null>(null)
+  const sleepRef = useRef<SleepTimer | null>(null)
+  const sleepPauseRequested = useRef(false)
   const position = useRef(0)
   const resumeAt = useRef(0)
   const played = useRef(false)
@@ -124,7 +133,45 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
     }
   }
 
+  function applyGain(next: number): void {
+    if (gain.current === next) return
+    gain.current = next
+    if (audio.current && volumeRef.current) audio.current.volume = fadedVolume(volumeRef.current.level, next)
+  }
+
+  function changeSleep(timer: SleepTimer | null): void {
+    sleepRef.current = timer
+    setSleep(timer)
+    if (timer) updateSleep()
+    else applyGain(1)
+  }
+
+  function stopForSleep(): void {
+    sleepPauseRequested.current = true
+    audio.current?.pause()
+    if (audio.current) checkpoint(audio.current)
+    changeSleep(null)
+  }
+
+  function updateSleep(): void {
+    const element = audio.current
+    const remaining = element && Number.isFinite(element.duration)
+      ? Math.max(0, element.duration - element.currentTime) * 1000 : null
+    const status = sleepStatus(sleepRef.current, Date.now(), queueRef.current.current, remaining)
+    applyGain(status.gain)
+    if (status.result === 'stop') stopForSleep()
+    if (status.result === 'cancel') changeSleep(null)
+  }
+
+  const tickSleep = useEffectEvent(updateSleep)
+  useEffect(() => {
+    if (!sleep) return
+    const tick = setInterval(() => tickSleep(), 100)
+    return () => clearInterval(tick)
+  }, [sleep])
+
   function showMediaError(): void {
+    if (sleepRef.current?.kind === 'track') changeSleep(null)
     session.current?.finish('error', audio.current?.duration ?? NaN)
     setPlaying(false)
     setError('Не удалось воспроизвести файл. Если файл был изменён, импортируйте папку повторно.')
@@ -135,6 +182,7 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
       await element.play()
       return token === request.current
     } catch {
+      if (token === request.current && sleepPauseRequested.current && element.paused && !element.error) return true
       if (token === request.current) showMediaError()
       return false
     }
@@ -168,6 +216,7 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
         return false
       }
       element.src = source.url
+      if (sleepPauseRequested.current) return true
       return await play(element, token)
     } catch {
       if (token === request.current) showMediaError()
@@ -182,6 +231,8 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
     const previousTrack = previous.entries.find(entry => entry.id === previous.current)?.trackId
     let remember = played.current
     const savedPosition = options.restore ? position.current : 0
+    if (sleepRef.current?.kind === 'track' && (direction !== 'restart' || options.fresh)) changeSleep(null)
+    sleepPauseRequested.current = false
     const token = resetAudio(element)
     if (options.fresh) {
       setExplanations(new Map())
@@ -308,6 +359,7 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
   function resume(): void {
     const element = audio.current
     if (!element || !sessionReady || !volume || busy.current || !element.paused) return
+    sleepPauseRequested.current = false
     const state = queueRef.current
     if (element.hasAttribute('src') && !element.error && !element.ended) {
       setError('')
@@ -350,6 +402,21 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
     queue, entriesById, tracksById, track, mode, playlistName: queue.source.type === 'playlist' ? queue.source.name : undefined,
     playing, loading, ready: sessionReady && !!volume, error: error || feedbackError || volumeError || storageError,
     waveNotice, duration, restoredPosition, volume, changeVolume, canGoBack, canGoNext,
+    sleep, changeSleep, currentEntryId: queue.current,
+    adjustVolume: (offset: number) => {
+      const current = volumeRef.current
+      if (!current) return
+      const level = Math.min(1, Math.max(0, Math.round((current.level + offset) * 100) / 100))
+      changeVolume({ ...current, level, muted: offset > 0 ? false : current.muted })
+    },
+    toggleMute: () => {
+      const current = volumeRef.current
+      if (current) changeVolume({ ...current, muted: !current.muted })
+    },
+    setVolumeLevel: (level: number) => {
+      const current = volumeRef.current
+      if (current) changeVolume({ ...current, level })
+    },
     recommendation: current?.kind === 'recommendation' ? { entryId: current.id, explanation: explanations.get(current.id) } : undefined,
     addToQueue, pause, resume, toggle, step, seek,
     changeShuffle: () => {
@@ -380,6 +447,8 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
       },
       onPlaying: () => {
         if (!audio.current?.paused && audio.current?.hasAttribute('src')) {
+          if (sleepRef.current) updateSleep()
+          if (audio.current.paused) return
           played.current = true
           session.current?.playing()
           setPlaying(true)
@@ -392,6 +461,7 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
         const element = audio.current
         if (!element) return
         if (!element.paused && element.readyState >= 3) session.current?.resume()
+        if (sleepRef.current) updateSleep()
         checkpoint(element)
       },
       onTimeUpdate: () => {
@@ -402,7 +472,13 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
         if (!element?.ended) return
         session.current?.finish('ended', element.duration)
         setPlaying(false)
+        if (sleepAtTrackEnd(sleepRef.current, Date.now(), queueRef.current.current)) {
+          stopForSleep()
+          return
+        }
         checkpoint(element)
+        // A timer tick may pause an ended element before Chromium delivers its ended event.
+        if (sleepPauseRequested.current) return
         if (queueRef.current.repeat === 'one') void navigate('restart')
         else step(1)
       },

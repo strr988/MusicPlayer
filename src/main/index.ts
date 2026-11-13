@@ -1,16 +1,17 @@
 import { randomInt } from 'node:crypto'
 import { mkdir, readdir } from 'node:fs/promises'
-import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, dialog, ipcMain, net, protocol, session } from 'electron'
-import type { IpcMainInvokeEvent } from 'electron'
-import { channels, playerOrigin, playlistNameLimit, waveModes } from '../shared/contracts'
-import type { ImportResult, WaveMode } from '../shared/contracts'
+import type { IpcMainInvokeEvent, WebContents, WebPreferences } from 'electron'
+import { channels, maxWavePulse, playerOrigin, playlistNameLimit, waveModes } from '../shared/contracts'
+import type { ImportResult, RescanResult, WaveMode } from '../shared/contracts'
 import { Library } from './library'
 import { serveMedia } from './media'
 import { Artwork } from './artwork'
 import { validatePlaybackEvent, validatePreference } from './feedback-validation'
 import { validatePlaybackSession } from './playback-session'
+import { registerPlayerExperience } from './player-experience'
+import { resolveLibraryPath } from './library-profile'
 import { explainWave, generateWave } from '../recommendations/engine'
 import type { RecommendationContext } from '../recommendations/engine'
 
@@ -30,6 +31,7 @@ if (developmentUrl && (developmentUrl.protocol !== 'http:' || developmentUrl.hos
 const entryUrl = developmentUrl?.href ?? `${playerOrigin}/`
 let window: BrowserWindow | null = null
 let pendingImport: Promise<ImportResult> | undefined
+let pendingRescan: Promise<RescanResult> | undefined
 
 function senderWindow(event: IpcMainInvokeEvent): BrowserWindow {
   if (!window || event.sender !== window.webContents ||
@@ -100,6 +102,18 @@ function registerIpc(library: Library): void {
     if (!waveModes.includes(mode as WaveMode)) throw new Error('Invalid wave mode')
     library.setWaveMode(mode as WaveMode)
   })
+  ipcMain.handle(channels.getWavePulse, (event, ...args: unknown[]) => {
+    senderWindow(event)
+    if (args.length) throw new Error('Unexpected Wave pulse arguments')
+    return library.getWavePulse()
+  })
+  ipcMain.handle(channels.setWavePulse, (event, ...args: unknown[]) => {
+    senderWindow(event)
+    const [intensity] = args
+    if (args.length !== 1 || typeof intensity !== 'number' || !Number.isInteger(intensity) ||
+        intensity < 0 || intensity > maxWavePulse) throw new Error('Invalid Wave pulse intensity')
+    library.setWavePulse(intensity)
+  })
   ipcMain.handle(channels.getPlaylists, (event) => {
     senderWindow(event)
     return library.getPlaylists()
@@ -148,6 +162,13 @@ function registerIpc(library: Library): void {
     pendingImport ??= chooseFolder(owner, library).finally(() => { pendingImport = undefined })
     return pendingImport
   })
+  ipcMain.handle(channels.rescanLibrary, (event, ...args: unknown[]) => {
+    senderWindow(event)
+    if (args.length !== 0) throw new Error('Unexpected library rescan arguments')
+    pendingRescan ??= library.rescanLibrary().catch((): RescanResult => ({ status: 'failed' }))
+      .finally(() => { pendingRescan = undefined })
+    return pendingRescan
+  })
   ipcMain.handle(channels.getTracks, async (event) => {
     senderWindow(event)
     await library.refreshAvailability()
@@ -182,13 +203,20 @@ async function start(): Promise<void> {
     app.quit()
     return
   }
-  const library = new Library(join(userData, 'library.sqlite3'))
+  const library = new Library(resolveLibraryPath(userData))
   const artwork = new Artwork(library)
   app.once('will-quit', () => library.close())
 
   const playerSession = session.fromPartition('music-player')
-  playerSession.setPermissionRequestHandler((_contents, _permission, reply) => reply(false))
-  playerSession.setPermissionCheckHandler(() => false)
+  const canEnterFullscreen = (contents: WebContents | null, permission: string, details: {
+    isMainFrame: boolean
+    requestingUrl?: string
+  }) => permission === 'fullscreen' && details.isMainFrame && details.requestingUrl === entryUrl &&
+    contents === window?.webContents && contents?.mainFrame.url === entryUrl
+  playerSession.setPermissionRequestHandler((contents, permission, reply, details) => {
+    reply(canEnterFullscreen(contents, permission, details))
+  })
+  playerSession.setPermissionCheckHandler((contents, permission, _origin, details) => canEnterFullscreen(contents, permission, details))
   playerSession.on('will-download', (event) => event.preventDefault())
 
   const renderer = new URL('../renderer/', import.meta.url)
@@ -220,6 +248,16 @@ async function start(): Promise<void> {
   })
 
   registerIpc(library)
+  const preferences: WebPreferences = {
+    session: playerSession,
+    preload: fileURLToPath(new URL('../preload/index.cjs', renderer)),
+    contextIsolation: true,
+    sandbox: true,
+    nodeIntegration: false,
+  }
+  const experience = registerPlayerExperience(library, () => window, senderWindow, entryUrl, preferences)
+  app.on('before-quit', experience.beginQuit)
+  app.once('will-quit', experience.dispose)
 
   async function createWindow(): Promise<void> {
     const player = new BrowserWindow({
@@ -231,11 +269,7 @@ async function start(): Promise<void> {
       backgroundColor: '#14131a',
       autoHideMenuBar: true,
       webPreferences: {
-        session: playerSession,
-        preload: fileURLToPath(new URL('../preload/index.cjs', renderer)),
-        contextIsolation: true,
-        sandbox: true,
-        nodeIntegration: false,
+        ...preferences,
         // Keep muted playback and automatic transitions running in a hidden window.
         backgroundThrottling: false,
       },
@@ -245,20 +279,29 @@ async function start(): Promise<void> {
     player.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
     player.webContents.on('will-navigate', (event) => event.preventDefault())
     player.webContents.on('will-redirect', (event) => event.preventDefault())
-    player.on('closed', () => { window = null })
+    player.on('blur', experience.endShortcutCapture)
+    player.webContents.on('render-process-gone', experience.endShortcutCapture)
+    player.on('closed', () => {
+      experience.endShortcutCapture()
+      window = null
+      experience.closeMini()
+    })
     await player.loadURL(entryUrl)
   }
 
   await createWindow()
-  app.on('second-instance', () => {
-    if (window?.isMinimized()) window.restore()
-    window?.focus()
+  app.on('second-instance', experience.focus)
+  app.on('activate', () => {
+    if (window) experience.focus()
+    else void createWindow().catch(onStartupError)
   })
-  app.on('activate', () => { if (!window) void createWindow().catch(onStartupError) })
 }
 
 function onStartupError(error: unknown): void {
   console.error('Music Player failed to start', error)
+  if (app.isPackaged) {
+    dialog.showErrorBox('Music Player', 'Не удалось открыть плеер. Проверьте доступ к папке профиля и версию базы медиатеки.')
+  }
   app.exit(1)
 }
 

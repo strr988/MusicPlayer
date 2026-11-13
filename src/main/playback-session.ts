@@ -50,3 +50,14 @@ export function validatePlaybackSession(input: unknown): PlaybackSession {
   return { position, queue: { source: source(queue.source), entries, current, pending, history,
     shuffle: queue.shuffle, repeat: queue.repeat as RepeatMode } }
 }
+
+export function filterPlaybackSession({ position, queue }: PlaybackSession, keep: (trackId: string) => boolean): PlaybackSession {
+  const entries = queue.entries.filter(entry => keep(entry.trackId))
+  const entryIds = new Set(entries.map(entry => entry.id))
+  const current = queue.current && entryIds.has(queue.current) ? queue.current : null
+  return {
+    position: current ? position : 0,
+    queue: { ...queue, entries, current, pending: queue.pending.filter(id => entryIds.has(id)),
+      history: queue.history.filter(id => entryIds.has(id)) },
+  }
+}

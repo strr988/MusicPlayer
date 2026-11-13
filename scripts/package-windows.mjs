@@ -65,12 +65,8 @@ try {
       await cp(join(item.parentPath, item.name), join(modules, item.name), { recursive: true })
     }
   }
-  const demo = join(packageDir, 'Demo audio')
-  await mkdir(demo)
-  for (const file of ['01-tone.mp3', '02-tone.flac']) {
-    await cp(join(root, 'tests', 'fixtures', file), join(demo, file))
-  }
   await cp(join(root, 'docs', 'WINDOWS_RELEASE.md'), join(packageDir, 'DEMO.md'))
+  await cp(join(root, 'docs', 'PLAYER_EXPERIENCE.md'), join(packageDir, 'PLAYER_EXPERIENCE.md'))
 
   const archive = join(staging, zipName)
   execFileSync(tar, ['-a', '-cf', archive, '-C', staging, appFolder], { stdio: 'inherit' })
