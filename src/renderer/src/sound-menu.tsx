@@ -8,9 +8,10 @@ const labels: Record<SoundEffect, string> = {
 }
 const formatRate = new Intl.NumberFormat('ru')
 
-export function SoundMenu({ sound, saving = false, error, changeEffect, changeReverb }: {
+export function SoundMenu({ sound, saving = false, error, changeEffect, changeReverb, className }: {
   sound: SoundSettings | null
   saving?: boolean
+  className?: string
   error?: string
   changeEffect(effect: SoundEffect): void
   changeReverb(effect: SoundEffect, enabled: boolean): void
@@ -19,7 +20,7 @@ export function SoundMenu({ sound, saving = false, error, changeEffect, changeRe
   const effect = sound?.effect ?? 'original'
   return <>
     <IconButton icon="effects" label="Звуковые эффекты" popoverTarget={id} aria-controls={id}
-      className="sound-button" data-active={effect !== 'original' || sound?.reverb[effect] || undefined} />
+      className={className ? `sound-button ${className}` : "sound-button"} data-active={effect !== 'original' || sound?.reverb[effect] || undefined} />
     <div className="sound-menu" id={id} popover="auto">
       <label className="sound-control">
         <span>Пресет</span>

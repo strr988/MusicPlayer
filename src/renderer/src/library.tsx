@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
-import type { ImportIssue, LibraryTrack } from '../../shared/contracts'
+import type { ImportIssue, LibraryTrack, MusicFolder } from '../../shared/contracts'
 import { Artwork } from './artwork'
 import { EmptyState } from './empty-state'
 import { Icon, IconButton, LikeButton } from './icons'
@@ -12,16 +12,21 @@ import { TrackQueueActions } from './queue-panel'
 const issueLabels: Record<ImportIssue['reason'], string> = {
   'directory-unreadable': 'папка недоступна',
   'file-unreadable': 'файл не прочитан',
-  'format-mismatch': 'формат аудио не соответствует расширению файла',
+  'format-mismatch': 'контейнер или кодек не подходит для этого расширения',
+  'codec-unsupported': 'кодек не поддерживается (например, Apple Lossless в M4A)',
 }
 
 export function Library({ tracks, loading, loadFailed, retryLoad, scan, notice, issues, importFolder, rescanLibrary,
-  activeId, playing, ready, likedIds, likeDisabled, toggleLike, select, addToQueue, addToPlaylist }: {
+  folders, folderListError, removeFolder, retryFolders, activeId, playing, ready, likedIds, likeDisabled, toggleLike, select, addToQueue, addToPlaylist }: {
   tracks: LibraryTrack[]
   loading: boolean
   loadFailed: boolean
   retryLoad: () => void
-  scan: 'import' | 'rescan' | null
+  scan: 'import' | 'rescan' | 'remove' | null
+  folders: MusicFolder[]
+  folderListError: boolean
+  removeFolder: (id: string) => void
+  retryFolders: () => void
   notice?: { text: string; processed?: number }
   issues: ImportIssue[]
   importFolder: () => void
@@ -49,7 +54,7 @@ export function Library({ tracks, loading, loadFailed, retryLoad, scan, notice, 
       <Icon name="refresh" />{scan === 'rescan' ? 'Обновляем…' : 'Обновить'}
     </button>
     <button type="button" className="primary" onClick={importFolder} disabled={!!scan || loading}>
-      <Icon name="folder" />{scan === 'import' ? 'Импорт…' : 'Выбрать папку'}
+      <Icon name="folder" />{scan === 'import' ? 'Импорт…' : 'Добавить папку'}
     </button>
   </div>
   const sortState = (field: SortField) => sortField === field ? (direction === 'asc' ? 'ascending' : 'descending') : undefined
@@ -64,7 +69,17 @@ export function Library({ tracks, loading, loadFailed, retryLoad, scan, notice, 
       </div>
       {tracks.length > 0 && actions}
     </header>
-    {scan && <p className="notice" role="status">{scan === 'rescan' ? 'Перечитываем импортированные папки…' : 'Читаем папку…'}</p>}
+    {(folders.length > 0 || folderListError) && <details className="music-folders">
+      <summary>Музыкальные папки ({folders.length})</summary>
+      {folderListError && <button type="button" className="secondary" onClick={retryFolders}>Обновить список папок</button>}
+      <ul>{folders.map(folder => <li key={folder.id}>
+        <span>{folder.label}</span>
+        <button type="button" className="secondary" disabled={!!scan || loading || !ready}
+          aria-label={`Исключить папку ${folder.label}`} onClick={() => removeFolder(folder.id)}>Исключить</button>
+      </li>)}</ul>
+      <p className="muted">Исключение папки убирает её треки из библиотеки. Файлы остаются на диске.</p>
+    </details>}
+    {scan && <p className="notice" role="status">{scan === 'rescan' ? 'Перечитываем импортированные папки…' : scan === 'remove' ? 'Исключаем папку…' : 'Читаем папку…'}</p>}
     {!scan && notice && <p className={notice.processed ? 'sr-only' : 'notice'} role="status">{notice.text}</p>}
     {!scan && issues.length > 0 && <details className="import-result">
       <summary className="danger">Результат сканирования · ошибок: {issues.length}</summary>
@@ -77,7 +92,7 @@ export function Library({ tracks, loading, loadFailed, retryLoad, scan, notice, 
       loadFailed ? <EmptyState icon="library" title="Не удалось открыть библиотеку"
         action={<button type="button" className="primary" onClick={retryLoad}>Повторить загрузку</button>} /> :
       tracks.length === 0 ? <EmptyState icon="music" title="Здесь появится ваша музыка" action={actions}>
-        Выберите папку с файлами MP3 или FLAC.
+        Добавьте папку с файлами MP3, AAC, M4A, FLAC, WAV, Ogg, Opus или WebM.
       </EmptyState> : <>
         <div className="library-tools">
           <label className="search-control">

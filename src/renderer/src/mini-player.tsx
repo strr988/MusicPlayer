@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import type { MiniPlayerApi, MiniState } from '../../shared/contracts'
+import { useCursor } from './cursor'
 import { Artwork } from './artwork'
-import { IconButton } from './icons'
+import { Icon, IconButton } from './icons'
 import { formatTime } from './playback'
 import { DiscoLayer, pulseDisco } from './disco'
 import { SoundMenu } from './sound-menu'
@@ -9,6 +10,7 @@ import { WindowTitle } from './window-title'
 
 export function MiniPlayer({ api }: { api: MiniPlayerApi }) {
   const [state, setState] = useState<MiniState>()
+  useCursor(state?.cursor)
   const [error, setError] = useState('')
   const disco = useRef<HTMLDivElement>(null)
   useEffect(() => api.onDiscoBeat(strength => pulseDisco(disco.current, strength)), [api])
@@ -42,7 +44,11 @@ export function MiniPlayer({ api }: { api: MiniPlayerApi }) {
     <main className="mini-player" aria-label="Мини-плеер">
       <header className="mini-header">
         <div className="now-playing">
-          <Artwork key={track?.artworkUrl} url={track?.artworkUrl ?? null} eager />
+          {track ? <button type="button" className="player-cover-button" aria-label="На весь экран" title="На весь экран"
+            onClick={() => request(api.showFull())}>
+            <Artwork key={track.artworkUrl} url={track.artworkUrl} eager />
+            <span className="player-cover-expand"><Icon name="expand" /></span>
+          </button> : <Artwork url={null} eager /> }
           <div className="player-track">
             <p className="track-name truncate" title={track?.title}>{track?.title ?? 'Трек не выбран'}</p>
             <p className="muted truncate" title={track?.artist ?? undefined}>

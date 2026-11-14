@@ -83,13 +83,15 @@ export function registerPlayerExperience(
   let playback: MiniPlayback | null = null
   let pinned = library.getMiniPinned()
   let quitting = false
+  let fullWindow: BrowserWindow | null = null
   let lastDiscoBeat = -Infinity
   let pendingLyrics = Promise.resolve()
   const sendCommand = (command: PlaybackCommand) => getMain()?.webContents.send(channels.playbackCommand, command)
   const shortcuts = new Shortcuts(globalShortcut, type => sendCommand({ type }), library.getShortcuts(),
     (action, accelerator) => library.setShortcut(action, accelerator))
 
-  const state = (): MiniState => ({ playback, pinned })
+  let miniCursor = library.getCursorSettings().selected
+  const state = (): MiniState => ({ playback, pinned, cursor: miniCursor })
   const publish = () => mini?.webContents.send(channels.miniState, state())
   const showMain = () => {
     const main = getMain()
@@ -112,6 +114,7 @@ export function registerPlayerExperience(
       mini.focus()
       return
     }
+    miniCursor = library.getCursorSettings().selected
     const zoomFactor = library.getInterfaceScale() / 100
     const compact = new BrowserWindow({
       ...windowChrome(library.getTheme()),
@@ -181,10 +184,44 @@ export function registerPlayerExperience(
     if (args.length) throw new Error('Unexpected mini player arguments')
     compact.close()
   })
+  ipcMain.handle(channels.showFullPlayer, (event, ...args: unknown[]) => {
+    const compact = miniSender(event)
+    if (args.length) throw new Error('Unexpected fullscreen arguments')
+    const main = getMain()
+    if (!main || main.isDestroyed() || quitting) return
+    compact.close()
+    if (fullWindow === main) return
+    fullWindow = main
+    const clear = () => { if (fullWindow === main) fullWindow = null }
+    main.once('closed', clear)
+    main.once('leave-full-screen', () => {
+      main.removeListener('closed', clear)
+      if (fullWindow === main) fullWindow = null
+      if (!main.isDestroyed()) main.webContents.send(channels.showFullPlayerEvent, false)
+    })
+    main.setFullScreen(true)
+    main.webContents.send(channels.showFullPlayerEvent, true)
+  })
+  ipcMain.handle(channels.exitMiniFullscreen, (event, ...args: unknown[]) => {
+    const main = mainSender(event)
+    if (args.length) throw new Error('Unexpected fullscreen exit arguments')
+    if (fullWindow === main) main.setFullScreen(false)
+  })
   ipcMain.handle(channels.controlMiniPlayback, (event, ...args: unknown[]) => {
     miniSender(event)
     if (args.length !== 1) throw new Error('Invalid mini player command arguments')
     sendCommand(playbackCommand(args[0]))
+  })
+  ipcMain.handle(channels.getLyricsMode, (event, ...args: unknown[]) => {
+    mainSender(event)
+    if (args.length) throw new Error('Unexpected lyrics mode arguments')
+    return library.getLyricsMode()
+  })
+  ipcMain.handle(channels.setLyricsMode, (event, ...args: unknown[]) => {
+    mainSender(event)
+    const [mode] = args
+    if (args.length !== 1 || (mode !== 'read' && mode !== 'sync')) throw new Error('Invalid lyrics mode')
+    library.setLyricsMode(mode)
   })
   ipcMain.handle(channels.getLyrics, (event, ...args: unknown[]) => {
     mainSender(event)

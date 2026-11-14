@@ -5,7 +5,7 @@ import { dialog } from 'electron'
 
 import { catalogSize, longTitle } from './fixtures/interface-catalog.mjs'
 
-export async function verifyInterface({ player, run, click, waitFor, waitForAudio, folder, pendingRows }) {
+export async function verifyInterface({ player, run, click, waitFor, waitForAudio, folder, pendingRows, importLabel, v8 }) {
   const { webContents } = player
   const output = process.env.MUSTPLAY_SCREENSHOTS
   const queueToggle = '.queue-toggle'
@@ -95,7 +95,7 @@ export async function verifyInterface({ player, run, click, waitFor, waitForAudi
   await click('Открыть библиотеку')
   assert.equal(await run('document.activeElement.getAttribute("aria-label")'), 'Библиотека')
   dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] })
-  await click('Выбрать папку')
+  await click(importLabel)
   await waitFor('document.querySelectorAll("tbody tr").length === 100', 'first page of the synthetic library')
   const libraryPager = '[aria-label="Страницы библиотеки"]'
   const libraryNext = libraryPager + ' [aria-label="Следующая страница"]'
@@ -224,7 +224,16 @@ export async function verifyInterface({ player, run, click, waitFor, waitForAudi
     if (width === 1280) await capture('03-queue-docked-1280x800')
     key('Escape')
     await waitFor('document.querySelector(".queue-panel").hidden && document.activeElement.matches(".queue-toggle")', 'Escape closes queue and restores focus')
-    if (width === 620) {
+    if (width === 620 && v8) {
+      const repeat = '.repeat-control'
+      await mouseClick(repeat)
+      await waitFor('document.querySelector(".repeat-control").dataset.repeat === "all"', 'repeat all by mouse')
+      await focus(repeat)
+      key('Enter')
+      await waitFor('document.querySelector(".repeat-control span")?.textContent === "1"', 'repeat one by keyboard')
+      key('Enter')
+      await waitFor('document.querySelector(".repeat-control").dataset.repeat === "off"', 'repeat returns to off')
+    } else if (width === 620) {
       const repeatPicker = 'select[aria-label="Режим повтора"]'
       await openPicker(repeatPicker, 'above')
       await capture('11-repeat-picker')

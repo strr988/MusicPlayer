@@ -30,7 +30,7 @@ export default defineConfig({
           `script-src 'self'${server ? " 'unsafe-inline'" : ''}`,
           `style-src 'self'${server ? " 'unsafe-inline'" : ''}`,
           `media-src ${server ? `${playerScheme}:` : "'self'"}`,
-          `img-src ${server ? playerOrigin : "'self'"}`,
+          `img-src ${server ? "'self' " + playerOrigin : "'self'"}`,
           `connect-src 'self'${server ? ' ws://127.0.0.1:*' : ''}`,
           "base-uri 'none'",
           "form-action 'none'",

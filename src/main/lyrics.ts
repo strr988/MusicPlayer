@@ -1,3 +1,4 @@
+import { audioMime } from './audio-formats'
 import { lstat, open, realpath } from 'node:fs/promises'
 import { extname } from 'node:path'
 import { LyricsContentType, parseStream, TimestampFormat } from 'music-metadata'
@@ -34,7 +35,7 @@ async function readEmbedded(file: FileHandle, source: LocalSource): Promise<Lyri
   if (size <= 0) return null
   const stream = file.createReadStream({ start: 0, end: size - 1, autoClose: false })
   try {
-    const mimeType = source.format === 'mp3' ? 'audio/mpeg' : 'audio/flac'
+    const mimeType = audioMime[source.format]
     const { common, native } = await parseStream(stream, { mimeType, size }, {
       skipCovers: true, maxMemoryAllocation: probeLimit, maxMetadataEntries: 10_000,
     })

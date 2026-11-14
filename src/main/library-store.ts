@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
-import { defaultInterfaceScale, defaultSoundSettings, defaultWavePulse, interfaceScales, maxWavePulse, playerOrigin, playlistNameLimit, soundEffects } from '../shared/contracts'
-import type { Track, LibraryTrack, ListeningData, ListeningDataReader, PlaybackEventInput, PlaybackSession, Playlist, TrackPreference, VolumePreference, WaveMode } from '../shared/contracts'
+import { audioFormats, builtInCursors, defaultInterfaceScale, defaultSoundSettings, defaultWavePulse, interfaceScales, maxWavePulse, playerOrigin, playlistNameLimit, soundEffects } from '../shared/contracts'
+import type { CursorPreset, CursorSettings, LyricsMode, Track, LibraryTrack, ListeningData, ListeningDataReader, PlaybackEventInput, PlaybackSession, Playlist, TrackPreference, VolumePreference, WaveMode } from '../shared/contracts'
 import type { FileIdentity } from './local-file'
 import { validatePlaybackSession } from './playback-session'
 import { removeLegacyDemo } from './legacy-demo'
@@ -104,7 +104,39 @@ const migrations = [
     effect TEXT PRIMARY KEY CHECK (effect IN (${soundEffects.map(effect => `'${effect}'`).join(', ')})),
     enabled INTEGER NOT NULL CHECK (enabled IN (0, 1))
   ) STRICT;`,
+  migrateAudioFormats,
 ]
+
+function migrateAudioFormats(db: DatabaseSync): void {
+  db.exec(`CREATE TABLE tracks_new (
+    id TEXT PRIMARY KEY NOT NULL,
+    title TEXT NOT NULL,
+    artist TEXT,
+    album TEXT,
+    duration_seconds REAL CHECK (duration_seconds > 0),
+    genres TEXT NOT NULL,
+    format TEXT NOT NULL CHECK (format IN (${audioFormats.map(format => `'${format}'`).join(', ')}))
+  ) STRICT;
+  INSERT INTO tracks_new SELECT * FROM tracks ORDER BY rowid;
+  DROP TABLE tracks;
+  ALTER TABLE tracks_new RENAME TO tracks;
+  ALTER TABLE sources ADD COLUMN excluded INTEGER NOT NULL DEFAULT 0 CHECK (excluded IN (0, 1));
+  CREATE TABLE cursor_presets (
+    id TEXT PRIMARY KEY NOT NULL,
+    label TEXT NOT NULL,
+    arrow BLOB NOT NULL,
+    arrow_x INTEGER NOT NULL,
+    arrow_y INTEGER NOT NULL,
+    pointer BLOB NOT NULL,
+    pointer_x INTEGER NOT NULL,
+    pointer_y INTEGER NOT NULL
+  ) STRICT;
+  ALTER TABLE appearance_settings ADD COLUMN cursor_preset TEXT NOT NULL DEFAULT 'mustplay';
+  ALTER TABLE appearance_settings ADD COLUMN lyrics_mode TEXT NOT NULL DEFAULT 'read' CHECK (lyrics_mode IN ('read', 'sync'));`)
+}
+
+export type CursorImage = { png: Uint8Array<ArrayBuffer>; x: number; y: number }
+const cursorLabels = { mustplay: 'mustplay', contrast: 'Контрастный', system: 'Системный (без кастомного)' }
 
 export interface LocalSource {
   id: string
@@ -112,6 +144,7 @@ export interface LocalSource {
   path: string
   format: Track['format']
   available: boolean
+  excluded: boolean
   identity: FileIdentity
 }
 
@@ -121,6 +154,7 @@ interface LocalSourceRow {
   provider_id: string
   format: Track['format']
   available: number
+  excluded: number
   dev: string
   ino: string
   birthtime_ns: string
@@ -131,11 +165,11 @@ interface LocalSourceRow {
 
 export interface ScanEntry {
   track: Track
-  source: Omit<LocalSource, 'available'>
+  source: Omit<LocalSource, 'available' | 'excluded'>
   previousSourceId?: string
 }
 
-const selectLocalSources = `SELECT s.id, s.track_id, s.provider_id, s.available, t.format,
+const selectLocalSources = `SELECT s.id, s.track_id, s.provider_id, s.available, s.excluded, t.format,
   f.dev, f.ino, f.birthtime_ns, f.size, f.mtime_ns, f.ctime_ns
   FROM sources s JOIN tracks t ON t.id = s.track_id
   JOIN local_files f ON f.source_id = s.id WHERE s.provider = 'local'`
@@ -147,6 +181,7 @@ function toLocalSource(row: LocalSourceRow): LocalSource {
     path: row.provider_id,
     format: row.format,
     available: row.available === 1,
+    excluded: row.excluded === 1,
     identity: {
       dev: BigInt(row.dev), ino: BigInt(row.ino), birthtimeNs: BigInt(row.birthtime_ns),
       size: BigInt(row.size), mtimeNs: BigInt(row.mtime_ns), ctimeNs: BigInt(row.ctime_ns),
@@ -171,14 +206,26 @@ export class LibraryStore implements ListeningDataReader {
           throw new Error('Library backup verification failed')
         }
       }
-      this.transaction(() => {
-        for (let index = version; index < migrations.length; index++) {
+      const audioMigration = migrations.indexOf(migrateAudioFormats)
+      const upgrade = (from: number, to: number) => this.transaction(() => {
+        for (let index = from; index < to; index++) {
           const migration = migrations[index]
           if (typeof migration === 'string') this.db.exec(migration)
           else migration(this.db)
           this.db.exec(`PRAGMA user_version = ${index + 1}`)
         }
+        if (from === audioMigration && this.db.prepare('PRAGMA foreign_key_check').get()) {
+          throw new Error('Invalid library references')
+        }
       })
+      if (version < audioMigration) upgrade(version, audioMigration)
+      if (version <= audioMigration) {
+        // Rebuild the parent table without cascading deletes. Earlier migrations still enforce foreign keys.
+        this.db.exec('PRAGMA foreign_keys = OFF')
+        upgrade(audioMigration, audioMigration + 1)
+        this.db.exec('PRAGMA foreign_keys = ON')
+      }
+      if (migrations.length > audioMigration + 1) upgrade(Math.max(version, audioMigration + 1), migrations.length)
     } catch (error) {
       this.db.close()
       throw error
@@ -187,6 +234,46 @@ export class LibraryStore implements ListeningDataReader {
 
   close(): void {
     this.db.close()
+  }
+
+  getLyricsMode(): LyricsMode {
+    return this.db.prepare('SELECT lyrics_mode FROM appearance_settings WHERE id = 1').get()?.lyrics_mode === 'sync' ? 'sync' : 'read'
+  }
+
+  setLyricsMode(mode: LyricsMode): void {
+    this.db.prepare('UPDATE appearance_settings SET lyrics_mode = ? WHERE id = 1').run(mode)
+  }
+
+  getCursorSettings(): CursorSettings {
+    const custom = this.db.prepare('SELECT id, label, arrow_x, arrow_y, pointer_x, pointer_y FROM cursor_presets ORDER BY rowid').all()
+      .map(row => ({ id: row.id as string, label: row.label as string,
+        arrow: { x: row.arrow_x as number, y: row.arrow_y as number },
+        pointer: { x: row.pointer_x as number, y: row.pointer_y as number } }))
+    const presets: CursorPreset[] = [...builtInCursors.map(id => ({ id, label: cursorLabels[id] })), ...custom]
+    const selected = this.db.prepare('SELECT cursor_preset FROM appearance_settings WHERE id = 1').get()?.cursor_preset
+    return { selected: presets.find(preset => preset.id === selected) ?? presets[0], presets }
+  }
+
+  setCursorPreset(id: string): void {
+    if (!builtInCursors.some(value => value === id) && !this.db.prepare('SELECT 1 FROM cursor_presets WHERE id = ?').get(id)) {
+      throw new Error('Unknown cursor preset')
+    }
+    this.db.prepare('UPDATE appearance_settings SET cursor_preset = ? WHERE id = 1').run(id)
+  }
+
+  importCursorPreset(id: string, label: string, arrow: CursorImage, pointer: CursorImage): void {
+    this.transaction(() => {
+      const count = this.db.prepare('SELECT COUNT(*) AS count FROM cursor_presets').get()?.count as number
+      if (count >= 32) throw new Error('Cursor preset limit reached')
+      this.db.prepare('INSERT INTO cursor_presets VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
+        id, label, arrow.png, arrow.x, arrow.y, pointer.png, pointer.x, pointer.y)
+      this.setCursorPreset(id)
+    })
+  }
+
+  readCursorImage(id: string, kind: 'arrow' | 'pointer'): Uint8Array<ArrayBuffer> | undefined {
+    const row = this.db.prepare(`SELECT ${kind} AS png FROM cursor_presets WHERE id = ?`).get(id)
+    return row?.png as Uint8Array<ArrayBuffer> | undefined
   }
 
   getPlaybackSession(): PlaybackSession | null {
@@ -393,9 +480,10 @@ export class LibraryStore implements ListeningDataReader {
 
   getTracks(): LibraryTrack[] {
     const rows = this.db.prepare(`SELECT t.id, title, artist, album, duration_seconds AS durationSeconds,
-      genres, format, EXISTS (SELECT 1 FROM sources WHERE track_id = t.id AND provider = 'local' AND available = 1) AS available,
-      (SELECT id FROM sources WHERE track_id = t.id AND provider = 'local'
-        ORDER BY available DESC, rowid LIMIT 1) AS sourceId FROM tracks t ORDER BY t.rowid`)
+      genres, format, EXISTS (SELECT 1 FROM sources WHERE track_id = t.id AND provider = 'local' AND excluded = 0 AND available = 1) AS available,
+      (SELECT id FROM sources WHERE track_id = t.id AND provider = 'local' AND excluded = 0
+        ORDER BY available DESC, rowid LIMIT 1) AS sourceId FROM tracks t WHERE EXISTS (SELECT 1 FROM sources s
+        WHERE s.track_id = t.id AND s.provider = 'local' AND s.excluded = 0) ORDER BY t.rowid`)
       .all() as unknown as (Omit<Track, 'genres'> & { genres: string; sourceId: string | null; available: number })[]
     return rows.map(({ sourceId, genres, available, ...row }) => ({
       ...row, genres: JSON.parse(genres) as string[],
@@ -404,21 +492,35 @@ export class LibraryStore implements ListeningDataReader {
     }))
   }
 
-  getLocalSources(): LocalSource[] {
-    return (this.db.prepare(selectLocalSources).all() as unknown as LocalSourceRow[]).map(toLocalSource)
+  getExcludedTrackIds(): ReadonlySet<string> {
+    return new Set(this.db.prepare(`SELECT DISTINCT track_id FROM sources s WHERE excluded = 1
+      AND NOT EXISTS (SELECT 1 FROM sources active WHERE active.track_id = s.track_id AND active.excluded = 0)`)
+      .all().map(row => row.track_id as string))
+  }
+
+  getLocalSources(includeExcluded = false): LocalSource[] {
+    return (this.db.prepare(selectLocalSources + (includeExcluded ? '' : ' AND s.excluded = 0')).all() as unknown as LocalSourceRow[]).map(toLocalSource)
   }
 
   getImportedFolders(): string[] {
     return this.db.prepare('SELECT path FROM imported_folders ORDER BY rowid').all().map(row => row.path as string)
   }
 
+  removeImportedFolder(path: string, exclude: string[]): void {
+    this.transaction(() => {
+      this.db.prepare('DELETE FROM imported_folders WHERE path = ?').run(path)
+      const update = this.db.prepare('UPDATE sources SET excluded = 1, available = 0 WHERE id = ?')
+      for (const id of exclude) update.run(id)
+    })
+  }
+
   getLocalSource(id: string): LocalSource | undefined {
-    const row = this.db.prepare(`${selectLocalSources} AND s.id = ?`).get(id) as LocalSourceRow | undefined
+    const row = this.db.prepare(`${selectLocalSources} AND s.id = ? AND s.excluded = 0`).get(id) as LocalSourceRow | undefined
     return row && toLocalSource(row)
   }
 
   getSourceId(trackId: string): string | undefined {
-    const row = this.db.prepare(`SELECT id FROM sources WHERE track_id = ? AND provider = 'local'
+    const row = this.db.prepare(`SELECT id FROM sources WHERE track_id = ? AND provider = 'local' AND excluded = 0
       ORDER BY available DESC, rowid LIMIT 1`).get(trackId) as { id: string } | undefined
     return row?.id
   }
@@ -441,7 +543,7 @@ export class LibraryStore implements ListeningDataReader {
         genres = excluded.genres, format = excluded.format`)
       const addSource = this.db.prepare(`INSERT INTO sources (id, track_id, provider, provider_id, available)
         VALUES (?, ?, 'local', ?, 1)`)
-      const updateSource = this.db.prepare('UPDATE sources SET id = ?, provider_id = ?, available = 1 WHERE id = ?')
+      const updateSource = this.db.prepare('UPDATE sources SET id = ?, provider_id = ?, available = 1, excluded = 0 WHERE id = ?')
       const writeFile = this.db.prepare(`INSERT INTO local_files (source_id, dev, ino, birthtime_ns, size, mtime_ns, ctime_ns)
         VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (source_id) DO UPDATE SET dev = excluded.dev, ino = excluded.ino,

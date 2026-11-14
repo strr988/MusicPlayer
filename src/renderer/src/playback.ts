@@ -1,10 +1,10 @@
 import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
 import { defaultSoundSettings, queueEntryLimit, soundEffectRates } from '../../shared/contracts'
-import type { LibraryTrack, PlaybackEventInput, PlaybackQueue, Playlist, QueueEntry, QueueSource, RepeatMode, SoundEffect, SoundSettings, VolumePreference, WaveDecision, WaveRecommendations } from '../../shared/contracts'
+import type { LibraryTrack, PlaybackEventInput, PlaybackQueue, Playlist, QueueEntry, QueueSource, SoundEffect, SoundSettings, VolumePreference, WaveDecision, WaveRecommendations } from '../../shared/contracts'
 import { createAudioEffects } from './audio-effects'
 import type { AudioEffects } from './audio-effects'
 import { ListeningSession } from './listening-session'
-import { emptyQueue, enqueue, goBack, movePending, previousEntry, removePending, repeatQueue, setShuffle, startQueue, takePending } from './playback-queue'
+import { emptyQueue, enqueue, goBack, keepQueueTracks, nextRepeatMode, movePending, previousEntry, removePending, repeatQueue, setShuffle, startQueue, takePending } from './playback-queue'
 import { fadedVolume, sleepAtTrackEnd, sleepStatus } from './sleep-timer'
 import type { SleepTimer } from './sleep-timer'
 
@@ -120,12 +120,14 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
   const [playing, setPlaying] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [pastRestartPoint, setPastRestartPoint] = useState(false)
   const [duration, setDuration] = useState<number | null>(null)
   const tracksById = useMemo(() => new Map(tracks.map(track => [track.id, track])), [tracks])
   const entriesById = useMemo(() => new Map(queue.entries.map(entry => [entry.id, entry])), [queue.entries])
   const current = queue.current ? entriesById.get(queue.current) : undefined
   const track = current && tracksById.get(current.trackId)
   const mode = queue.source.type
+  const restartPoint = 3
   const ready = sessionReady && !!volume && sound !== null
 
   async function saveSound(next: SoundSettings, persistSetting: () => Promise<void>): Promise<void> {
@@ -275,6 +277,7 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
     element.load()
     setPlaying(false)
     setDuration(null)
+    setPastRestartPoint(false)
     setRestoredPosition(null)
     setLoading(true)
     setError('')
@@ -418,10 +421,34 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
     void navigate('next', { fresh: startQueue(queueRef.current, source, entries, startAt) })
   }
 
+  function keepTracks(ids: ReadonlySet<string>): void {
+    const state = queueRef.current
+    const next = keepQueueTracks(state, id => ids.has(id))
+    if (next === state) return
+    if (next.current !== state.current && audio.current) {
+      resetAudio(audio.current)
+      busy.current = false
+      setLoading(false)
+      played.current = false
+      position.current = resumeAt.current = 0
+      if (sleepRef.current?.kind === 'track') changeSleep(null)
+    }
+    updateQueue(next)
+  }
+
+  // Keep normal media events local; only readiness and queue changes redraw the player.
   function step(offset: -1 | 1): void {
     const state = queueRef.current
     if (offset === -1) {
-      if (previousEntry(state)) void navigate('back')
+      if (!ready || busy.current || !state.current) return
+      const element = audio.current
+      const loaded = element?.hasAttribute('src') && !element.error && Number.isFinite(element.duration)
+      if (loaded && element && element.currentTime >= restartPoint) seek(0)
+      else if (!loaded && position.current >= restartPoint) {
+        position.current = 0
+        setRestoredPosition(0)
+        persist()
+      } else if (previousEntry(state)) void navigate('back')
     } else if (state.pending.length || state.source.type === 'wave' ||
         (state.repeat === 'all' && state.entries.length)) {
       void navigate('next')
@@ -474,7 +501,8 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
     element.currentTime = Math.min(element.duration, Math.max(0, seconds))
   }
 
-  const canGoBack = !loading && !!previousEntry(queue)
+  const canGoBack = ready && !loading && (!!previousEntry(queue) || !!track &&
+    (pastRestartPoint || (restoredPosition ?? 0) >= restartPoint))
   const canGoNext = !loading && (queue.pending.length > 0 || mode === 'wave' ||
     (queue.repeat === 'all' && queue.entries.length > 0))
 
@@ -499,19 +527,22 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
       if (current) changeVolume({ ...current, level })
     },
     recommendation: current?.kind === 'recommendation' ? { entryId: current.id, explanation: explanations.get(current.id) } : undefined,
-    addToQueue, pause, resume, toggle, step, seek,
+    addToQueue, pause, resume, toggle, step, seek, keepTracks,
     changeShuffle: () => {
       const state = queueRef.current
       if (state.source.type !== 'wave') updateQueue(setShuffle(state, !state.shuffle))
     },
-    changeRepeat: (repeat: RepeatMode) => updateQueue({ ...queueRef.current, repeat }),
+    cycleRepeat: () => {
+      const state = queueRef.current
+      updateQueue({ ...state, repeat: nextRepeatMode(state) })
+    },
     move: (id: string, offset: -1 | 1) => updateQueue(movePending(queueRef.current, id, offset)),
     remove: (id?: string) => updateQueue(removePending(queueRef.current, id)),
     jump: (id: string) => {
       if (queueRef.current.pending.includes(id)) void navigate('jump', { id })
     },
     select: (id: string) => start({ type: 'library' }, tracks.map(item => item.id), tracks.findIndex(item => item.id === id)),
-    startPlaylist: (playlist: Playlist) => start({ type: 'playlist', id: playlist.id, name: playlist.name }, playlist.trackIds, 0),
+    startPlaylist: (playlist: Playlist) => start({ type: 'playlist', id: playlist.id, name: playlist.name }, playlist.trackIds.filter(id => tracksById.has(id)), 0),
     startWave: () => {
       if (queueRef.current.source.type === 'wave') void navigate('next', { allowSame: !!waveNotice })
       else void navigate('next', { fresh: startQueue(queueRef.current, { type: 'wave' }, [], 0), allowSame: true })
@@ -541,7 +572,10 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
         setPlaying(false)
       },
       onWaiting: () => session.current?.suspend(),
-      onSeeking: () => session.current?.suspend(),
+      onSeeking: () => {
+        session.current?.suspend()
+        setPastRestartPoint((audio.current?.currentTime ?? 0) >= restartPoint)
+      },
       onSeeked: () => {
         const element = audio.current
         if (!element) return
@@ -550,7 +584,10 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
         checkpoint(element)
       },
       onTimeUpdate: () => {
-        if (audio.current && performance.now() - lastCheckpoint.current >= 5_000) checkpoint(audio.current)
+        const element = audio.current
+        if (!element) return
+        setPastRestartPoint(element.hasAttribute('src') && !element.error && element.currentTime >= restartPoint)
+        if (performance.now() - lastCheckpoint.current >= 5_000) checkpoint(element)
       },
       onEnded: () => {
         const element = audio.current
@@ -571,7 +608,12 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
         const length = audio.current?.duration
         setDuration(length !== undefined && Number.isFinite(length) && length > 0 ? length : null)
       },
-      onError: () => { if (audio.current?.error) showMediaError() },
+      onError: () => {
+        if (audio.current?.error) {
+          setPastRestartPoint(false)
+          showMediaError()
+        }
+      },
     },
   }
 }

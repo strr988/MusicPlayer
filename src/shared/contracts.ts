@@ -6,6 +6,9 @@ export const channels = {
   getWavePulse: 'appearance:get-wave-pulse',
   setWavePulse: 'appearance:set-wave-pulse',
   setTheme: 'appearance:set-theme',
+  getCursorSettings: 'appearance:get-cursors',
+  setCursorPreset: 'appearance:set-cursor',
+  importCursorPreset: 'appearance:import-cursor',
   getInterfaceScale: 'appearance:get-interface-scale',
   setInterfaceScale: 'appearance:set-interface-scale',
   getSoundEffect: 'playback:get-sound-effect',
@@ -26,6 +29,8 @@ export const channels = {
   setTrackPreference: 'feedback:set-preference',
   recordPlaybackEvent: 'feedback:record-event',
   importFolder: 'library:import-folder',
+  getMusicFolders: 'library:music-folders',
+  removeMusicFolder: 'library:remove-folder',
   rescanLibrary: 'library:rescan',
   getTracks: 'library:get-tracks',
   getPlayableSource: 'playback:get-source',
@@ -34,6 +39,8 @@ export const channels = {
   getPlaybackSession: 'playback:get-session',
   setPlaybackSession: 'playback:set-session',
   getLyrics: 'lyrics:get',
+  getLyricsMode: 'lyrics:get-mode',
+  setLyricsMode: 'lyrics:set-mode',
   openMiniPlayer: 'mini:open',
   getMiniState: 'mini:get-state',
   publishMiniState: 'mini:publish-state',
@@ -41,6 +48,9 @@ export const channels = {
   miniVisibility: 'mini:visibility',
   setMiniPinned: 'mini:set-pinned',
   showMainPlayer: 'mini:show-main',
+  showFullPlayer: 'mini:show-full',
+  showFullPlayerEvent: 'mini:show-full-event',
+  exitMiniFullscreen: 'mini:exit-full',
   controlMiniPlayback: 'mini:control',
   playbackCommand: 'playback:command',
   getShortcuts: 'shortcuts:get',
@@ -50,6 +60,16 @@ export const channels = {
 
 export const playerScheme = 'mustplay'
 export const playerOrigin = `${playerScheme}://app`
+export const builtInCursors = ['mustplay', 'contrast', 'system'] as const
+export interface CursorPreset {
+  id: string
+  label: string
+  arrow?: { x: number; y: number }
+  pointer?: { x: number; y: number }
+}
+export interface CursorSettings { selected: CursorPreset; presets: CursorPreset[] }
+
+export type LyricsMode = 'read' | 'sync'
 export type Theme = 'dark' | 'light'
 export const themeBackground = { dark: '#15131a', light: '#f8f6fc' } satisfies Record<Theme, string>
 export const interfaceScales = [80, 90, 100, 110, 125, 150] as const
@@ -70,6 +90,9 @@ export function isSoundEffect(value: unknown): value is SoundEffect {
   return soundEffects.includes(value as SoundEffect)
 }
 
+export const audioFormats = ['mp3', 'flac', 'aac', 'm4a', 'wav', 'ogg', 'opus', 'webm'] as const
+export type AudioFormat = typeof audioFormats[number]
+
 export interface Track {
   id: string
   title: string
@@ -77,7 +100,7 @@ export interface Track {
   album: string | null
   durationSeconds: number | null
   genres: string[]
-  format: 'mp3' | 'flac'
+  format: AudioFormat
 }
 
 export interface LibraryTrack extends Track {
@@ -134,13 +157,15 @@ export interface Playlist {
 
 export interface ImportIssue {
   entry: string
-  reason: 'directory-unreadable' | 'file-unreadable' | 'format-mismatch'
+  reason: 'directory-unreadable' | 'file-unreadable' | 'format-mismatch' | 'codec-unsupported'
 }
 
 export type ImportResult =
   | { status: 'cancelled' }
   | { status: 'failed' }
   | { status: 'complete'; tracks: LibraryTrack[]; processed: number; issues: ImportIssue[] }
+
+export interface MusicFolder { id: string; label: string }
 
 export type RescanResult = Extract<ImportResult, { status: 'complete' | 'failed' }> | { status: 'no-folders' }
 
@@ -197,6 +222,7 @@ export interface MiniPlayback {
 }
 
 export interface MiniState {
+  cursor: CursorPreset
   playback: MiniPlayback | null
   pinned: boolean
 }
@@ -208,6 +234,7 @@ export interface MiniPlayerApi {
   control(command: PlaybackCommand): Promise<void>
   setPinned(pinned: boolean): Promise<void>
   showMain(): Promise<void>
+  showFull(): Promise<void>
 }
 
 export const repeatModes = ['off', 'all', 'one'] as const
@@ -264,6 +291,9 @@ export interface MustplayApi {
   getWavePulse(): Promise<number>
   setWavePulse(intensity: number): Promise<void>
   setTheme(theme: Theme): Promise<void>
+  getCursorSettings(): Promise<CursorSettings>
+  setCursorPreset(id: string): Promise<CursorSettings>
+  importCursorPreset(): Promise<CursorSettings | null>
   getInterfaceScale(): Promise<InterfaceScale>
   setInterfaceScale(scale: InterfaceScale): Promise<void>
   getSoundEffect(): Promise<SoundSettings>
@@ -283,6 +313,8 @@ export interface MustplayApi {
   setTrackPreference(trackId: string, liked: boolean): Promise<TrackPreference>
   recordPlaybackEvent(event: PlaybackEventInput): Promise<void>
   importFolder(): Promise<ImportResult>
+  getMusicFolders(): Promise<MusicFolder[]>
+  removeMusicFolder(id: string): Promise<{ tracks: LibraryTrack[]; folders: MusicFolder[] }>
   rescanLibrary(): Promise<RescanResult>
   getTracks(): Promise<LibraryTrack[]>
   getPlayableSource(trackId: string): Promise<PlayableSource | null>
@@ -291,8 +323,12 @@ export interface MustplayApi {
   getPlaybackSession(): Promise<PlaybackSession | null>
   setPlaybackSession(session: PlaybackSession): Promise<void>
   getLyrics(trackId: string): Promise<Lyrics | null>
+  getLyricsMode(): Promise<LyricsMode>
+  setLyricsMode(mode: LyricsMode): Promise<void>
   openMiniPlayer(): Promise<void>
   publishMiniState(state: MiniPlayback): Promise<void>
+  onShowFullPlayer(callback: (open: boolean) => void): () => void
+  exitMiniFullscreen(): Promise<void>
   onMiniVisibility(callback: (visible: boolean) => void): () => void
   onPlaybackCommand(callback: (command: PlaybackCommand) => void): () => void
   getShortcuts(): Promise<ShortcutBindings>

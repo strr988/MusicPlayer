@@ -1,10 +1,10 @@
-import { repeatModes } from '../../shared/contracts'
 import type { RepeatMode } from '../../shared/contracts'
 import { Artwork } from './artwork'
 import { Icon, IconButton, LikeButton } from './icons'
 import type { usePlayback } from './playback'
 import { Timeline } from './timeline'
 import { SoundMenu } from './sound-menu'
+import { SleepMenu } from './sleep-menu'
 import type { RefObject } from 'react'
 
 const repeatLabels: Record<RepeatMode, string> = {
@@ -12,7 +12,7 @@ const repeatLabels: Record<RepeatMode, string> = {
 }
 
 export function Player({ playback, hasTracks, liked, likeDisabled, toggleLike, queueOpen, toggleQueue, queueButton,
-  textMusicOpen, textMusicButton, toggleTextMusic, openFullPlayer, fullPlayerButton }: {
+  textMusicOpen, textMusicButton, toggleTextMusic, openFullPlayer, fullPlayerButton, openMini }: {
   playback: ReturnType<typeof usePlayback>
   hasTracks: boolean
   liked: boolean
@@ -24,6 +24,7 @@ export function Player({ playback, hasTracks, liked, likeDisabled, toggleLike, q
   textMusicOpen: boolean
   textMusicButton: RefObject<HTMLButtonElement | null>
   toggleTextMusic: () => void
+  openMini: () => void
   openFullPlayer: () => void
   fullPlayerButton: RefObject<HTMLButtonElement | null>
 }) {
@@ -54,6 +55,8 @@ export function Player({ playback, hasTracks, liked, likeDisabled, toggleLike, q
         trackDuration={track?.durationSeconds ?? null} restoredPosition={playback.restoredPosition} seek={playback.seek} />
     </div>
     <div className="player-tools">
+      <IconButton icon="mini" label="Открыть мини-плеер" onClick={openMini} />
+      <SleepMenu playback={playback} />
       <SoundMenu sound={playback.sound} saving={playback.savingSoundEffect} error={playback.soundEffectError}
         changeEffect={playback.changeSoundEffect} changeReverb={playback.changeReverb} />
       <IconButton ref={textMusicButton} icon="lyrics" label="Текстомузыка" aria-pressed={textMusicOpen}
@@ -80,7 +83,7 @@ export function TransportControls({ playback, hasTracks }: {
   hasTracks: boolean
 }) {
   const { queue, playing, loading, ready, mode } = playback
-  const repeatLabel = queue.repeat === 'all' && mode === 'wave' ? 'Непрерывная волна' : repeatLabels[queue.repeat]
+  const repeatLabel = 'Повтор · ' + (queue.repeat === 'all' && mode === 'wave' ? 'Непрерывная волна' : repeatLabels[queue.repeat])
   return <div className="controls" role="group" aria-label="Управление воспроизведением">
     <IconButton icon="shuffle" label="Shuffle" aria-pressed={queue.shuffle && mode !== 'wave'}
       title={mode === 'wave' ? 'Порядок рекомендаций определяет «Моя волна»' : 'Перемешать ожидающие треки (Shuffle)'}
@@ -89,15 +92,8 @@ export function TransportControls({ playback, hasTracks }: {
     <IconButton icon={playing ? 'pause' : 'play'} label={playing ? 'Пауза' : 'Воспроизвести'} className="play-button"
       disabled={!hasTracks || loading || !ready} onClick={playback.toggle} />
     <IconButton icon="next" label="Следующий трек" disabled={!playback.canGoNext || !ready} onClick={() => playback.step(1)} />
-    <label className="repeat-control icon-button" data-active={queue.repeat !== 'off'} title={'Повтор · ' + repeatLabel}>
-      <Icon name="repeat" />
-      {queue.repeat === 'one' && <span aria-hidden="true">1</span>}
-      <select className="player-select" aria-label="Режим повтора" value={queue.repeat} disabled={!ready}
-        onChange={event => playback.changeRepeat(event.currentTarget.value as RepeatMode)}>
-        {repeatModes.map(item => <option key={item} value={item} disabled={item === 'all' && mode === 'wave'}>
-          {item === 'all' && mode === 'wave' ? 'Непрерывная волна' : repeatLabels[item]}
-        </option>)}
-      </select>
-    </label>
+    <IconButton icon="repeat" className="repeat-control" label="Режим повтора" title={repeatLabel}
+      aria-description={repeatLabel} data-repeat={queue.repeat} disabled={!ready} onClick={playback.cycleRepeat}
+      decoration={queue.repeat === 'one' ? <span aria-hidden="true">1</span> : undefined} />
   </div>
 }

@@ -1,10 +1,8 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { defaultWavePulse, interfaceScales, maxWavePulse, shortcutActions, soundEffectRates } from '../../shared/contracts'
+import { defaultWavePulse, interfaceScales, maxWavePulse, shortcutActions } from '../../shared/contracts'
 import type { InterfaceScale, ShortcutAction, ShortcutBinding, ShortcutBindings } from '../../shared/contracts'
+import type { useCursorSettings } from './cursor'
 import type { useDiscoMode } from './disco'
-import { formatTime } from './playback'
-import type { usePlayback } from './playback'
-import { sleepMaxMinutes, sleepPresets, timedSleep } from './sleep-timer'
 import { captureShortcut } from './shortcut-capture'
 
 const shortcutLabels: Record<ShortcutAction, string> = {
@@ -20,19 +18,18 @@ const shortcutErrors = {
   unavailable: 'Windows не зарегистрировала сочетание. Возможно, оно занято.',
 }
 
-export function PlayerSettings({ playback, wavePulse, changeWavePulse, openMini, disco }: {
-  playback: ReturnType<typeof usePlayback>
+export function PlayerSettings({ wavePulse, changeWavePulse, disco, cursor }: {
   wavePulse: number | null
   changeWavePulse: (value: number) => void
-  openMini: () => void
   disco: ReturnType<typeof useDiscoMode>
+  cursor: ReturnType<typeof useCursorSettings>
 }) {
   return <section aria-label="Настройки плеера">
     <header className="section-heading">
       <h1>Настройки</h1>
     </header>
     <div className="player-settings">
-      <InterfaceSettings disco={disco} />
+      <InterfaceSettings disco={disco} cursor={cursor} />
       <section className="settings-card">
         <h2>Моя волна</h2>
         <label className="pulse-setting">
@@ -44,17 +41,12 @@ export function PlayerSettings({ playback, wavePulse, changeWavePulse, openMini,
             onChange={event => changeWavePulse(event.currentTarget.valueAsNumber)} />
         </label>
       </section>
-      <SleepSettings playback={playback} />
-      <section className="settings-card">
-        <h2>Мини-плеер</h2>
-        <button className="secondary" type="button" onClick={openMini}>Открыть мини-плеер</button>
-      </section>
       <ShortcutSettings />
     </div>
   </section>
 }
 
-function InterfaceSettings({ disco }: { disco: ReturnType<typeof useDiscoMode> }) {
+function InterfaceSettings({ disco, cursor }: { disco: ReturnType<typeof useDiscoMode>; cursor: ReturnType<typeof useCursorSettings> }) {
   const [scale, setScale] = useState<InterfaceScale>()
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -92,6 +84,20 @@ function InterfaceSettings({ disco }: { disco: ReturnType<typeof useDiscoMode> }
       </select>
     </label>
     {error && <p role="alert">{error}</p>}
+    <label className="settings-option">
+      <span>Курсор</span>
+      <select className="settings-input player-select" value={cursor.settings?.selected.id ?? ''}
+        disabled={cursor.busy || !cursor.settings} onChange={event => void cursor.change(event.currentTarget.value)}>
+        {!cursor.settings && <option value="">—</option>}
+        {cursor.settings?.presets.map(preset => <option key={preset.id} value={preset.id}>{preset.label}</option>)}
+      </select>
+    </label>
+    <div className="settings-actions">
+      <button type="button" className="secondary" disabled={cursor.busy || !cursor.settings}
+        onClick={() => void cursor.importPreset()}>Импортировать пресет курсора</button>
+    </div>
+    <p className="muted">Выберите JSON-пресет mustplay. Чтобы вернуть курсор Windows, выберите «Системный».</p>
+    {cursor.error && <p role="alert">{cursor.error}</p>}
     <label className="settings-option disco-setting">
       <span>Диско-режим</span>
       <input type="checkbox" role="switch" checked={disco.enabled ?? false} disabled={disco.enabled === null || disco.saving}
@@ -99,61 +105,6 @@ function InterfaceSettings({ disco }: { disco: ReturnType<typeof useDiscoMode> }
     </label>
     <p className="muted">Мягкие волны пульсируют под басовые удары.</p>
     {disco.error && <p role="alert">{disco.error}</p>}
-  </section>
-}
-
-function SleepSettings({ playback }: { playback: ReturnType<typeof usePlayback> }) {
-  const { sleep, changeSleep, track, currentEntryId, loading } = playback
-  const [minutes, setMinutes] = useState('')
-  const [now, setNow] = useState(Date.now)
-  const [position, setPosition] = useState(0)
-  const audio = playback.audioProps.ref
-  useEffect(() => {
-    if (!sleep) return
-    const update = () => {
-      setNow(Date.now())
-      setPosition(audio.current?.currentTime ?? 0)
-    }
-    update()
-    const interval = setInterval(update, 250)
-    return () => clearInterval(interval)
-  }, [sleep, audio])
-
-  function start(duration: number) {
-    const time = Date.now()
-    setNow(time)
-    changeSleep(timedSleep(duration, time))
-  }
-  const rate = soundEffectRates[playback.sound?.effect ?? 'original']
-  const remaining = sleep?.kind === 'deadline' ? Math.ceil(Math.max(0, sleep.at - now) / 1000)
-    : sleep?.kind === 'track' && playback.duration !== null ? Math.ceil(Math.max(0, playback.duration - position) / rate) : null
-  const customMinutes = Number(minutes)
-
-  return <section className="settings-card">
-    <h2>Таймер сна</h2>
-    <p className="muted">{sleep?.kind === 'track' ? 'До конца текущего трека' : sleep ? 'До остановки' : 'Таймер выключен'}
-      {remaining !== null && <strong className="sleep-remaining"> · {formatTime(remaining)}</strong>}
-    </p>
-    <div className="settings-actions" role="group" aria-label="Длительность таймера">
-      {sleepPresets.map(preset => <button key={preset} type="button" className="secondary"
-        onClick={() => start(preset)}>{preset} мин</button>)}
-    </div>
-    <form className="settings-actions" onSubmit={event => {
-      event.preventDefault()
-      if (timedSleep(customMinutes, Date.now())) start(customMinutes)
-    }}>
-      <input className="settings-input sleep-minutes" aria-label="Своя длительность в минутах"
-        type="number" min={1} max={sleepMaxMinutes} step={1} placeholder="Минуты" required value={minutes}
-        onChange={event => setMinutes(event.currentTarget.value)} />
-      <button className="secondary" type="submit">{sleep ? 'Изменить время' : 'Запустить'}</button>
-    </form>
-    <div className="settings-actions">
-      <button className="secondary" type="button" disabled={!track?.available || !currentEntryId || loading}
-        onClick={() => {
-          if (currentEntryId) changeSleep({ kind: 'track', entryId: currentEntryId })
-        }}>После текущего трека</button>
-      {sleep && <button className="text-button" type="button" onClick={() => changeSleep(null)}>Отменить таймер</button>}
-    </div>
   </section>
 }
 

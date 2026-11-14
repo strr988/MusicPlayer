@@ -94,3 +94,16 @@ export function repeatQueue(queue: PlaybackQueue): PlaybackQueue {
   if (queue.shuffle && pending.length > 1 && pending[0] === queue.current) pending.push(pending.shift()!)
   return { ...queue, current: null, pending, history: [] }
 }
+
+export function nextRepeatMode(queue: PlaybackQueue): PlaybackQueue['repeat'] {
+  if (queue.repeat === 'one') return 'off'
+  return queue.repeat === 'all' || queue.source.type === 'wave' ? 'one' : 'all'
+}
+
+export function keepQueueTracks(queue: PlaybackQueue, keep: (trackId: string) => boolean): PlaybackQueue {
+  const entries = queue.entries.filter(entry => keep(entry.trackId))
+  if (entries.length === queue.entries.length) return queue
+  const ids = new Set(entries.map(entry => entry.id))
+  return { ...queue, entries, current: queue.current && ids.has(queue.current) ? queue.current : null,
+    pending: queue.pending.filter(id => ids.has(id)), history: queue.history.filter(id => ids.has(id)) }
+}

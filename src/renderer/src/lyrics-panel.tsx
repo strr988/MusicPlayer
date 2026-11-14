@@ -1,6 +1,6 @@
 import { useEffect, useEffectEvent, useRef, useState } from 'react'
 import type { RefObject } from 'react'
-import type { LibraryTrack, Lyrics, LyricLine } from '../../shared/contracts'
+import type { LibraryTrack, Lyrics, LyricLine, LyricsMode } from '../../shared/contracts'
 import { activeLyric } from './active-lyric'
 import { Artwork } from './artwork'
 import { EmptyState } from './empty-state'
@@ -11,8 +11,8 @@ export function LyricsPanel({ track, active, audio, canSeek, seek, mode, changeM
   audio: RefObject<HTMLAudioElement | null>
   canSeek: boolean
   seek: (seconds: number) => void
-  mode: 'sync' | 'read'
-  changeMode: (mode: 'sync' | 'read') => void
+  mode: LyricsMode
+  changeMode?: (mode: LyricsMode) => void
   close?: () => void
   compact?: boolean
 }) {
@@ -74,7 +74,7 @@ export function LyricsPanel({ track, active, audio, canSeek, seek, mode, changeM
           </div>
         </div>}
       </div>
-      {lyrics?.kind === 'timed' && <button type="button" className="secondary" onClick={() => changeMode(mode === 'sync' ? 'read' : 'sync')}>
+      {changeMode && lyrics?.kind === 'timed' && <button type="button" className="secondary" onClick={() => changeMode(mode === 'sync' ? 'read' : 'sync')}>
         {mode === 'sync' ? 'Читать текст' : 'Текстомузыка'}
       </button>}
     </header>}
@@ -118,7 +118,7 @@ function TimedLyrics({ lines, active, audio, canSeek, seek, showFollowButton }: 
 
   return <>
     {showFollowButton && <div className="lyrics-toolbar">
-      <button type="button" className="secondary" aria-pressed={follow} onClick={() => setFollow(!follow)}>
+      <button type="button" className={follow ? "primary" : "secondary"} aria-pressed={follow} onClick={() => setFollow(!follow)}>
         Следить за текстом
       </button>
     </div>}

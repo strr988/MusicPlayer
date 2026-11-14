@@ -1,8 +1,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { defaultWavePulse } from '../../shared/contracts'
-import type { ImportIssue, LibraryTrack, Theme, TrackPreference, WaveMode } from '../../shared/contracts'
+import type { ImportIssue, MusicFolder, LibraryTrack, LyricsMode, Theme, TrackPreference, WaveMode } from '../../shared/contracts'
 import { Icon } from './icons'
 import { useDesktopPlayback } from './desktop-playback'
+import { useCursorSettings } from './cursor'
 import { DiscoLayer, pulseDisco, useDiscoMode } from './disco'
 import { FullPlayer } from './full-player'
 import { Library } from './library'
@@ -25,23 +26,40 @@ const sections = [
   { id: 'settings', label: 'Настройки', icon: 'settings' },
 ] as const
 type Section = typeof sections[number]['id']
-type LyricsMode = 'sync' | 'read'
 
 export function App({ initialTheme }: { initialTheme: Theme }) {
   const [tracks, setTracks] = useState<LibraryTrack[]>([])
   const [libraryLoading, setLibraryLoading] = useState(true)
   const [libraryLoadFailed, setLibraryLoadFailed] = useState(false)
   const [loadAttempt, setLoadAttempt] = useState(0)
-  const [scan, setScan] = useState<'import' | 'rescan' | null>(null)
+  const [scan, setScan] = useState<'import' | 'rescan' | 'remove' | null>(null)
   const [importNotice, setImportNotice] = useState<{ text: string; processed?: number }>()
   const [issues, setIssues] = useState<ImportIssue[]>([])
   const [notice, setNotice] = useState('')
   const [section, setSection] = useState<Section>('library')
-  const [lyricsMode, setLyricsMode] = useState<LyricsMode>('read')
+  const [lyricsMode, updateLyricsMode] = useState<LyricsMode>('read')
+  const lyricsRevision = useRef(0)
+  useEffect(() => {
+    let active = true
+    void window.mustplay.getLyricsMode().then(mode => {
+      if (active && !lyricsRevision.current) updateLyricsMode(mode)
+    }).catch(() => { if (active) setNotice('Не удалось загрузить режим текста.') })
+    return () => { active = false }
+  }, [])
+  function setLyricsMode(mode: LyricsMode) {
+    const revision = ++lyricsRevision.current
+    updateLyricsMode(mode)
+    void window.mustplay.setLyricsMode(mode).catch(() => {
+      if (revision === lyricsRevision.current) setNotice('Не удалось сохранить режим текста.')
+    })
+  }
+  const [folders, setFolders] = useState<MusicFolder[]>([])
+  const [folderListError, setFolderListError] = useState(false)
   const beforeLyrics = useRef<Section>('library')
   const lyricsButton = useRef<HTMLButtonElement>(null)
   const fullPlayerButton = useRef<HTMLButtonElement>(null)
   const fullDialog = useRef<HTMLDialogElement>(null)
+  const nativeFullscreen = useRef(false)
   const [fullPlayerOpen, setFullPlayerOpen] = useState(false)
   const openingFullPlayer = useRef(false)
   const ownsFullscreen = useRef(false)
@@ -55,6 +73,7 @@ export function App({ initialTheme }: { initialTheme: Theme }) {
   })
   useMediaControls(playback)
   const miniVisible = useDesktopPlayback(playback, tracks.length > 0)
+  const cursor = useCursorSettings()
   const discoLayer = useRef<HTMLDivElement>(null)
   const fullDiscoLayer = useRef<HTMLDivElement>(null)
   const disco = useDiscoMode(playback.audioEffects, playback.playing && !playback.loading &&
@@ -108,7 +127,13 @@ export function App({ initialTheme }: { initialTheme: Theme }) {
     return () => document.removeEventListener('fullscreenchange', onFullscreenChange)
   }, [])
 
-  function openFullPlayer() {
+  useEffect(() => window.mustplay.onShowFullPlayer(open => {
+    nativeFullscreen.current = open
+    if (open) openFullPlayer(true)
+    else void closeFullPlayer()
+  }), [])
+
+  function openFullPlayer(fromMini = false) {
     const dialog = fullDialog.current
     if (!dialog || dialog.open || openingFullPlayer.current) return
     function show() {
@@ -117,7 +142,7 @@ export function App({ initialTheme }: { initialTheme: Theme }) {
       dialog.showModal()
       setFullPlayerOpen(true)
     }
-    if (document.fullscreenElement || !document.fullscreenEnabled) {
+    if (fromMini || document.fullscreenElement || !document.fullscreenEnabled) {
       show()
       return
     }
@@ -135,6 +160,10 @@ export function App({ initialTheme }: { initialTheme: Theme }) {
     const exitFullscreen = ownsFullscreen.current && document.fullscreenElement === document.documentElement
     ownsFullscreen.current = false
     if (exitFullscreen) await document.exitFullscreen().catch(() => {})
+    if (nativeFullscreen.current) {
+      nativeFullscreen.current = false
+      await window.mustplay.exitMiniFullscreen().catch(() => {})
+    }
     fullPlayerButton.current?.focus()
   }
 
@@ -255,6 +284,36 @@ export function App({ initialTheme }: { initialTheme: Theme }) {
     }
   }
 
+  async function refreshFolders(): Promise<void> {
+    try {
+      setFolders(await window.mustplay.getMusicFolders())
+      setFolderListError(false)
+    } catch {
+      setFolderListError(true)
+    }
+  }
+
+  useEffect(() => { void refreshFolders() }, [])
+
+  async function removeFolder(id: string): Promise<void> {
+    if (scan) return
+    setScan('remove')
+    try {
+      const result = await window.mustplay.removeMusicFolder(id)
+      const ids = new Set(result.tracks.map(track => track.id))
+      playback.keepTracks(ids)
+      trackRead.current++
+      setTracks(result.tracks)
+      setFolders(result.folders)
+      setIssues([])
+      setImportNotice({ text: 'Папка исключена из библиотеки.' })
+    } catch {
+      setImportNotice({ text: 'Не удалось исключить папку.' })
+    } finally {
+      setScan(null)
+    }
+  }
+
   async function scanLibrary(mode: 'import' | 'rescan'): Promise<void> {
     if (scan) return
     const rescan = mode === 'rescan'
@@ -274,10 +333,11 @@ export function App({ initialTheme }: { initialTheme: Theme }) {
       }
       trackRead.current++
       setTracks(result.tracks)
+      await refreshFolders()
       setLibraryLoadFailed(false)
       setImportNotice(result.processed > 0 ?
         { text: 'Файлов обработано: ' + result.processed, processed: result.processed } :
-        { text: rescan ? 'В импортированных папках нет доступных MP3 и FLAC.' : 'В папке нет доступных MP3 и FLAC.' })
+        { text: rescan ? 'В импортированных папках нет поддерживаемых аудиофайлов.' : 'В папке нет поддерживаемых аудиофайлов.' })
     } catch {
       setIssues([])
       setImportNotice({ text: failure })
@@ -301,7 +361,6 @@ export function App({ initialTheme }: { initialTheme: Theme }) {
           aria-current={section === item.id ? 'page' : undefined} onClick={() => {
             if (item.id === 'lyrics' && section !== 'lyrics') {
               beforeLyrics.current = section
-              setLyricsMode('read')
             }
             openSection(item.id)
           }}
@@ -317,7 +376,8 @@ export function App({ initialTheme }: { initialTheme: Theme }) {
             <div hidden={section !== 'library'}>
               <Library tracks={tracks} loading={libraryLoading} loadFailed={libraryLoadFailed} retryLoad={retryLibrary}
                 scan={scan} notice={importNotice} issues={issues} importFolder={() => void scanLibrary('import')}
-                rescanLibrary={() => void scanLibrary('rescan')}
+                rescanLibrary={() => void scanLibrary('rescan')} folders={folders} folderListError={folderListError}
+                removeFolder={id => void removeFolder(id)} retryFolders={() => void refreshFolders()}
                 activeId={playback.track?.id} playing={playback.playing} ready={playback.ready}
                 likedIds={likedTrackIds} likeDisabled={likeDisabled} toggleLike={id => void toggleLike(id)}
                 select={playback.select} addToQueue={playback.addToQueue} addToPlaylist={id => {
@@ -346,8 +406,8 @@ export function App({ initialTheme }: { initialTheme: Theme }) {
                 mode={lyricsMode} changeMode={setLyricsMode} close={toggleTextMusic}
                 canSeek={playback.duration !== null && !playback.loading} seek={playback.seek} />
             </div>
-            {section === 'settings' && <PlayerSettings playback={playback} wavePulse={wavePulse}
-              changeWavePulse={changeWavePulse} openMini={openMini} disco={disco} />}
+            {section === 'settings' && <PlayerSettings wavePulse={wavePulse} cursor={cursor}
+              changeWavePulse={changeWavePulse} disco={disco} />}
           </div>
         </main>
         {playback.error && <p className="playback-error" role="alert">{playback.error}</p>}
@@ -355,10 +415,10 @@ export function App({ initialTheme }: { initialTheme: Theme }) {
       {covered && <div className="queue-scrim" aria-hidden="true" onClick={closeQueue} />}
       <QueuePanel playback={playback} open={queueOpen} close={closeQueue} closeButton={closeButton} />
     </div>
-    <Player {...playerControls} fullPlayerButton={fullPlayerButton} openFullPlayer={openFullPlayer}
+    <Player {...playerControls} openMini={openMini} fullPlayerButton={fullPlayerButton} openFullPlayer={() => openFullPlayer()}
       queueOpen={queueOpen} queueButton={queueButton} toggleQueue={() => queueOpen ? closeQueue() : setQueueOpen(true)}
       textMusicOpen={section === 'lyrics' && lyricsMode === 'sync'} textMusicButton={lyricsButton} toggleTextMusic={toggleTextMusic} />
-    <FullPlayer {...playerControls} dialog={fullDialog} open={fullPlayerOpen}
+    <FullPlayer {...playerControls} disco={disco} dialog={fullDialog} open={fullPlayerOpen}
       discoLayer={disco.enabled ? <DiscoLayer ref={fullDiscoLayer} /> : null} close={() => void closeFullPlayer()}
       openMini={() => void closeFullPlayer().then(openMini)} />
     <p className="sr-only" role="status">Треков в очереди: {playback.queue.pending.length}</p>

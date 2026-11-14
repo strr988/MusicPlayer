@@ -38,7 +38,7 @@ it('upgrades schema 8 and persists the theme alongside existing appearance prefe
   previous.close()
   {
     using db = new DatabaseSync(original)
-    db.exec(`DROP TABLE preset_reverb; ALTER TABLE appearance_settings DROP COLUMN disco;
+    db.exec(`DROP TABLE cursor_presets; ALTER TABLE sources DROP COLUMN excluded; DROP TABLE preset_reverb; ALTER TABLE appearance_settings DROP COLUMN cursor_preset; ALTER TABLE appearance_settings DROP COLUMN lyrics_mode; ALTER TABLE appearance_settings DROP COLUMN disco;
       ALTER TABLE appearance_settings DROP COLUMN interface_scale;
       ALTER TABLE appearance_settings DROP COLUMN theme; DROP TABLE playback_effect; PRAGMA user_version = 8`)
   }
@@ -61,7 +61,7 @@ it('upgrades a 0.7.0 profile and persists its zoom and sound effect beside the t
   previous.close()
   {
     using db = new DatabaseSync(original)
-    db.exec(`DROP TABLE preset_reverb; ALTER TABLE appearance_settings DROP COLUMN disco;
+    db.exec(`DROP TABLE cursor_presets; ALTER TABLE sources DROP COLUMN excluded; DROP TABLE preset_reverb; ALTER TABLE appearance_settings DROP COLUMN cursor_preset; ALTER TABLE appearance_settings DROP COLUMN lyrics_mode; ALTER TABLE appearance_settings DROP COLUMN disco;
       ALTER TABLE appearance_settings DROP COLUMN interface_scale; DROP TABLE playback_effect; PRAGMA user_version = 9`)
   }
   const upgraded = new LibraryStore(original)
@@ -100,7 +100,7 @@ it.each([6, 7])('copies only local library data from an experimental schema %i',
   }
   {
     using db = new DatabaseSync(original)
-    db.exec(`DROP TABLE preset_reverb; DROP TABLE playback_effect; DROP TABLE appearance_settings; DROP TABLE mini_player; DROP TABLE global_shortcuts;
+    db.exec(`DROP TABLE cursor_presets; ALTER TABLE sources DROP COLUMN excluded; DROP TABLE preset_reverb; DROP TABLE playback_effect; DROP TABLE appearance_settings; DROP TABLE mini_player; DROP TABLE global_shortcuts;
       CREATE TABLE stream_tracks (id TEXT PRIMARY KEY) STRICT;
       CREATE TABLE stream_settings (id INTEGER PRIMARY KEY) STRICT;
       PRAGMA user_version = ${version}`)

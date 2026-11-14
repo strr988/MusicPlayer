@@ -4,10 +4,11 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, protocol, session } from 'electron'
 import type { IpcMainInvokeEvent, WebContents, WebPreferences } from 'electron'
-import { channels, interfaceScales, isSoundEffect, maxWavePulse, playerOrigin, playerScheme, playlistNameLimit, themeBackground, waveModes } from '../shared/contracts'
+import { builtInCursors, channels, interfaceScales, isSoundEffect, maxWavePulse, playerOrigin, playerScheme, playlistNameLimit, themeBackground, waveModes } from '../shared/contracts'
 import type { ImportResult, InterfaceScale, RescanResult, WaveMode } from '../shared/contracts'
 import { hasTitleBarOverlay, titleBarColors, windowChrome } from './window-chrome'
 import { Library } from './library'
+import { readCursorPreset } from './cursor-presets'
 import { serveMedia } from './media'
 import { Artwork } from './artwork'
 import { validatePlaybackEvent, validatePreference } from './feedback-validation'
@@ -33,6 +34,7 @@ if (developmentUrl && (developmentUrl.protocol !== 'http:' || developmentUrl.hos
 const entryUrl = developmentUrl?.href ?? `${playerOrigin}/`
 let window: BrowserWindow | null = null
 let pendingImport: Promise<ImportResult> | undefined
+let importingCursor = false
 let pendingRescan: Promise<RescanResult> | undefined
 
 function senderWindow(event: IpcMainInvokeEvent): BrowserWindow {
@@ -154,6 +156,34 @@ function registerIpc(library: Library): void {
     if (args.length !== 2 || !isSoundEffect(effect) || typeof enabled !== 'boolean') throw new Error('Invalid reverb setting')
     library.setReverb(effect, enabled)
   })
+  ipcMain.handle(channels.getCursorSettings, (event, ...args: unknown[]) => {
+    senderWindow(event)
+    if (args.length) throw new Error('Unexpected cursor arguments')
+    return library.getCursorSettings()
+  })
+  ipcMain.handle(channels.setCursorPreset, (event, ...args: unknown[]) => {
+    senderWindow(event)
+    const [id] = args
+    if (args.length !== 1 || typeof id !== 'string' || !(builtInCursors.some(value => value === id) || idPattern.test(id))) {
+      throw new Error('Invalid cursor preset ID')
+    }
+    return library.setCursorPreset(id)
+  })
+  ipcMain.handle(channels.importCursorPreset, async (event, ...args: unknown[]) => {
+    const owner = senderWindow(event)
+    if (args.length || importingCursor) throw new Error('Invalid cursor import request')
+    importingCursor = true
+    try {
+      const result = await dialog.showOpenDialog(owner, {
+        title: 'Импорт пресета курсора', properties: ['openFile'], filters: [{ name: 'Пресет mustplay', extensions: ['json'] }],
+      })
+      if (result.canceled || !result.filePaths[0]) return null
+      const { label, arrow, pointer } = await readCursorPreset(result.filePaths[0])
+      return library.importCursorPreset(label, arrow, pointer)
+    } finally {
+      importingCursor = false
+    }
+  })
   ipcMain.handle(channels.getDiscoMode, (event, ...args: unknown[]) => {
     senderWindow(event)
     if (args.length) throw new Error('Unexpected disco arguments')
@@ -208,10 +238,24 @@ function registerIpc(library: Library): void {
     validatePlaybackEvent(input)
     library.recordPlaybackEvent(input)
   })
-  ipcMain.handle(channels.importFolder, (event) => {
+  ipcMain.handle(channels.importFolder, (event, ...args: unknown[]) => {
     const owner = senderWindow(event)
+    if (args.length) throw new Error('Unexpected import arguments')
     pendingImport ??= chooseFolder(owner, library).finally(() => { pendingImport = undefined })
     return pendingImport
+  })
+  ipcMain.handle(channels.getMusicFolders, (event, ...args: unknown[]) => {
+    senderWindow(event)
+    if (args.length) throw new Error('Unexpected music folder arguments')
+    return library.getMusicFolders()
+  })
+  ipcMain.handle(channels.removeMusicFolder, (event, ...args: unknown[]) => {
+    senderWindow(event)
+    const [id] = args
+    if (args.length !== 1 || typeof id !== 'string' || id.length !== 64 || !/^[a-f0-9]+$/.test(id)) {
+      throw new Error('Invalid music folder ID')
+    }
+    return library.removeMusicFolder(id)
   })
   ipcMain.handle(channels.rescanLibrary, (event, ...args: unknown[]) => {
     senderWindow(event)
@@ -300,6 +344,14 @@ async function start(): Promise<void> {
         response.headers.set('Access-Control-Allow-Origin', developmentUrl.origin)
       }
       return response
+    }
+    if (url.pathname.startsWith('/cursor/')) {
+      const [, , id, kind, extra] = url.pathname.split('/')
+      const png = extra === undefined && idPattern.test(id) && (kind === 'arrow' || kind === 'pointer')
+        ? library.readCursorImage(id, kind) : undefined
+      return png ? new Response(request.method === 'HEAD' ? null : png, {
+        headers: { 'Content-Type': 'image/png', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' },
+      }) : new Response(null, { status: 404 })
     }
     if (url.pathname.startsWith('/artwork/')) {
       const id = url.pathname.slice('/artwork/'.length)

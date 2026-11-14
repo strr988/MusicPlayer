@@ -1,3 +1,4 @@
+import { audioMime } from './audio-formats'
 import { parseStream } from 'music-metadata'
 import type { FileHandle } from 'node:fs/promises'
 import type { Library } from './library'
@@ -110,7 +111,7 @@ export class Artwork {
     if (size <= 0) return null
     const stream = file.createReadStream({ start: 0, end: size - 1, autoClose: false })
     try {
-      const mimeType = source.format === 'mp3' ? 'audio/mpeg' : 'audio/flac'
+      const mimeType = audioMime[source.format]
       const { common } = await parseStream(stream, { mimeType, size }, {
         maxMemoryAllocation: probeBytes,
         maxMetadataEntries: 1_000,

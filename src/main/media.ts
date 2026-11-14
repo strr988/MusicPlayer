@@ -1,3 +1,4 @@
+import { audioMime } from './audio-formats'
 import { Readable } from 'node:stream'
 import type { Library } from './library'
 
@@ -31,7 +32,7 @@ export async function serveMedia(request: Request, library: Library, id: string)
       const headers = new Headers({
         'Accept-Ranges': 'bytes',
         'Cache-Control': 'no-store',
-        'Content-Type': source.format === 'mp3' ? 'audio/mpeg' : 'audio/flac',
+        'Content-Type': audioMime[source.format],
         'X-Content-Type-Options': 'nosniff',
       })
       const rangeHeader = request.headers.get('range')

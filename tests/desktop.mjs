@@ -50,6 +50,20 @@ test('built Electron app imports, plays and restores its library across restarts
   assert.deepEqual(await readFile(join(fixtures, '01.mp3')), originalMp3)
 })
 
+test('built app decodes AAC, M4A, PCM WAV, Vorbis, Opus and WebM via the local protocol', { timeout: 40_000 }, async t => {
+  const { fixtures, run } = await prepareElectron(t)
+  for (const name of ['aac', 'm4a', 'wav', 'ogg', 'opus', 'webm', 'alac.m4a']) {
+    const target = name === 'alac.m4a' ? 'lossless-apple.m4a' : 'extra.' + name
+    await copyFile(new URL('./fixtures/formats/tone.' + name, import.meta.url), join(fixtures, target))
+  }
+  await run('audio-formats')
+})
+
+test('excluding a music folder revokes its playback while preserving overlapping folders', { timeout: 40_000 }, async t => {
+  const { run } = await prepareElectron(t)
+  await run('folder-exclusion')
+})
+
 test('library refresh rescans saved folders without opening a dialog', { timeout: 75_000 }, async t => {
   const { run } = await prepareElectron(t)
   await run('library-rescan')

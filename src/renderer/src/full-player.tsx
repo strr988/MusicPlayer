@@ -8,6 +8,8 @@ import type { usePlayback } from './playback'
 import { QueuePanel } from './queue-panel'
 import { Timeline } from './timeline'
 import { SoundMenu } from './sound-menu'
+import { SleepPanel } from './sleep-menu'
+import type { useDiscoMode } from './disco'
 
 function coverTint(image: HTMLImageElement): string | undefined {
   const canvas = document.createElement('canvas')
@@ -41,6 +43,7 @@ type FullPlayerControls = {
   close: () => void
   openMini: () => void
   discoLayer: ReactNode
+  disco: ReturnType<typeof useDiscoMode>
 }
 
 export function FullPlayer({ dialog, open, ...controls }: FullPlayerControls & {
@@ -53,14 +56,14 @@ export function FullPlayer({ dialog, open, ...controls }: FullPlayerControls & {
   </dialog>
 }
 
-function FullPlayerContent({ playback, hasTracks, liked, likeDisabled, toggleLike, close, openMini, discoLayer }: FullPlayerControls) {
+function FullPlayerContent({ playback, hasTracks, liked, likeDisabled, toggleLike, close, openMini, discoLayer, disco }: FullPlayerControls) {
   const [side, setSide] = useState<'lyrics' | 'queue' | null>(null)
-  const [lyricsMode, setLyricsMode] = useState<'sync' | 'read'>('sync')
   const [tint, setTint] = useState<{ url: string; color: string }>()
   const queueButton = useRef<HTMLButtonElement>(null)
   const queueClose = useRef<HTMLButtonElement>(null)
   const exit = useRef<HTMLButtonElement>(null)
-  const moreMenu = useRef<HTMLDivElement>(null)
+  const more = useRef<HTMLDivElement>(null)
+  const [moreOpen, setMoreOpen] = useState(false)
   const { track, loading, playing, volume } = playback
   const level = Math.round((volume?.level ?? 1) * 100)
   const url = track?.artworkUrl
@@ -98,13 +101,13 @@ function FullPlayerContent({ playback, hasTracks, liked, likeDisabled, toggleLik
             <IconButton ref={queueButton} icon="queue" label="Очередь" className="full-queue-button"
               aria-expanded={side === 'queue'} aria-controls="full-playback-queue"
               onClick={() => side === 'queue' ? closeQueue() : setSide('queue')} />
+            <SoundMenu className="full-sound-button" sound={playback.sound} saving={playback.savingSoundEffect}
+              error={playback.soundEffectError} changeEffect={playback.changeSoundEffect} changeReverb={playback.changeReverb} />
             <TransportControls playback={playback} hasTracks={hasTracks} />
             <div className="full-cover-actions">
-              <IconButton icon="more" label="Дополнительно" popoverTarget="full-player-menu" />
-              <SoundMenu sound={playback.sound} saving={playback.savingSoundEffect} error={playback.soundEffectError}
-                changeEffect={playback.changeSoundEffect} changeReverb={playback.changeReverb} />
+              <IconButton icon="more" label="Дополнительно" popoverTarget="full-player-menu" aria-controls="full-player-menu" />
               <IconButton icon="lyrics" label="Текстомузыка" aria-pressed={side === 'lyrics'}
-                onClick={() => { setLyricsMode('sync'); setSide(side === 'lyrics' ? null : 'lyrics') }} />
+                onClick={() => setSide(side === 'lyrics' ? null : 'lyrics')} />
               <LikeButton label="Лайк текущему треку" aria-pressed={liked} disabled={!track || likeDisabled}
                 onClick={toggleLike} />
             </div>
@@ -121,17 +124,24 @@ function FullPlayerContent({ playback, hasTracks, liked, likeDisabled, toggleLik
       {side === 'lyrics' && <div className="full-player-side">
         <LyricsPanel key={JSON.stringify([track?.id, url, track?.available])} track={track} active compact
           audio={playback.audioProps.ref} canSeek={playback.duration !== null && !loading} seek={playback.seek}
-          mode={lyricsMode} changeMode={setLyricsMode} />
+          mode="sync" />
       </div>}
       {side === 'queue' && <div className="full-player-side">
         <QueuePanel id="full-playback-queue" playback={playback} open close={closeQueue} closeButton={queueClose} />
       </div>}
     </div>
-    <div ref={moreMenu} id="full-player-menu" className="full-player-menu" popover="auto">
-      <button type="button" onClick={() => { moreMenu.current?.hidePopover(); setLyricsMode('read'); setSide('lyrics') }}>
-        Читать текст песни
-      </button>
-      <button type="button" onClick={() => { moreMenu.current?.hidePopover(); openMini() }}>Открыть мини-плеер</button>
+    <div ref={more} id="full-player-menu" className="sound-menu full-player-menu" popover="auto"
+      onToggle={event => setMoreOpen(event.newState === 'open')}>
+      {moreOpen && <>
+        <SleepPanel playback={playback} />
+        <label className="sound-control disco-setting">
+          <span>Диско-режим</span>
+          <input type="checkbox" role="switch" checked={disco.enabled ?? false} disabled={disco.enabled === null || disco.saving}
+            onChange={event => void disco.change(event.currentTarget.checked)} />
+        </label>
+        {disco.error && <p role="alert">{disco.error}</p>}
+        <button type="button" className="secondary" onClick={() => { more.current?.hidePopover(); openMini() }}>Открыть мини-плеер</button>
+      </>}
     </div>
   </>
 }

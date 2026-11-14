@@ -47,7 +47,7 @@ it('cleans a legacy demo folder and its references during migration while retain
     await rm(missing, { recursive: true })
     {
       using db = new DatabaseSync(database)
-      db.exec('DROP TABLE preset_reverb; DROP TABLE playback_effect; DROP TABLE appearance_settings; PRAGMA user_version = 6')
+      db.exec('DROP TABLE cursor_presets; ALTER TABLE sources DROP COLUMN excluded; DROP TABLE preset_reverb; DROP TABLE playback_effect; DROP TABLE appearance_settings; PRAGMA user_version = 6')
     }
     const upgraded = new LibraryStore(database)
     try {

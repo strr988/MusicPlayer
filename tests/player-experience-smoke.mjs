@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { app, BrowserWindow, dialog, globalShortcut } from 'electron'
 
-export async function verifyPlayerExperience({ player, folder, run, click, waitFor, waitForAudio, choose, finishTrack, sessionState, restart }) {
+export async function verifyPlayerExperience({ player, folder, run, click, waitFor, waitForAudio, finishTrack, sessionState, setRepeat, importLabel, v8, restart }) {
   if (!restart) {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] })
-    await click('Выбрать папку')
+    await click(importLabel)
   }
   await waitFor('document.querySelectorAll("tbody tr").length === 2 && !document.querySelector(".track-button").disabled', 'player experience catalog')
   await click('Настройки')
@@ -24,6 +24,13 @@ export async function verifyPlayerExperience({ player, folder, run, click, waitF
   }
   const colorScheme = 'getComputedStyle(document.documentElement).colorScheme'
   if (restart) {
+    if (v8) {
+      await waitFor('document.documentElement.dataset.cursor === "custom"', 'imported cursor survives restart')
+      await click('Текст песни')
+      await waitFor('document.querySelector("#song-lyrics")?.getAttribute("aria-label") === "Текстомузыка"', 'lyrics mode survives restart')
+      await click('Настройки')
+      await waitFor(`${pulse} && !${pulse}.disabled`, 'pulse settings restored')
+    }
     assert.equal(globalShortcut.isRegistered('Ctrl+Shift+F11'), true)
     assert.equal(await run(`${pulse}.valueAsNumber`), 275)
     const mini = await openMini()
@@ -33,6 +40,31 @@ export async function verifyPlayerExperience({ player, folder, run, click, waitF
     assert.equal(await run('document.querySelector("audio").paused'), true)
     mini.close()
     return
+  }
+  if (v8) {
+    const cursor = 'document.querySelector(`select.settings-input:has(option[value=system])`)'
+    await waitFor(cursor + ' && !' + cursor + '.disabled', 'cursor settings loaded')
+    const selectCursor = id => run(cursor + '.value = ' + JSON.stringify(id) + '; ' + cursor + '.dispatchEvent(new Event("change", {bubbles:true}))')
+    for (const id of ['system', 'contrast']) {
+      await selectCursor(id)
+      await waitFor('document.documentElement.dataset.cursor === ' + JSON.stringify(id), 'cursor preset ' + id)
+      const css = await run('getComputedStyle(document.body).cursor')
+      if (id === 'system') assert.equal(css, 'auto')
+      else assert.match(css, /cursor-contrast-arrow/)
+    }
+    const png = await readFile(new URL('../src/renderer/assets/cursor-arrow.png', import.meta.url))
+    const preset = join(folder, 'cursor.json')
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [preset] })
+    const value = { version: 1, name: 'Test Cursor', arrow: { png: png.toString('base64'), x: 4, y: 3 } }
+    await writeFile(preset, JSON.stringify({ ...value, arrow: { ...value.arrow, x: 100 } }))
+    await assert.rejects(run('window.mustplay.importCursorPreset()'), /Renderer script failed/)
+    await writeFile(preset, JSON.stringify(value))
+    await click('Импортировать пресет курсора')
+    await waitFor('document.documentElement.dataset.cursor === "custom"', 'imported cursor applied')
+    const { selected } = await run('window.mustplay.getCursorSettings()')
+    assert.equal(selected.label, 'Test Cursor')
+    assert.match(await run('getComputedStyle(document.body).cursor'), /\/cursor\/.*\/arrow/)
+    assert.equal(await run('fetch(' + JSON.stringify('mustplay://app/cursor/' + selected.id + '/arrow') + ').then(res => res.headers.get("content-type"))'), 'image/png')
   }
   assert.equal(await run(colorScheme), 'dark')
   assert.equal(await run('document.querySelector(".window-title img").decode().then(() => true)'), true)
@@ -125,7 +157,7 @@ export async function verifyPlayerExperience({ player, folder, run, click, waitF
   await click('Test Tone MP3')
   const mp3 = await waitForAudio('!audio.paused && audio.currentTime > 0.1', 'MP3 playback')
   await run('window.originalAudio = document.querySelector("audio"); void 0')
-  await choose('Режим повтора', 'one')
+  await setRepeat('one')
   await click('Текст песни')
   await waitFor(`document.querySelector(".lyrics-plain")?.textContent === ${JSON.stringify('Первая строка\nВторая строка')}`, 'reading mode for LRC')
   await run('document.querySelector("footer button[aria-label=Текстомузыка]").click()')
@@ -159,10 +191,18 @@ export async function verifyPlayerExperience({ player, folder, run, click, waitF
   await waitFor('document.querySelector("nav button[aria-current]").getAttribute("aria-label") === "Библиотека"', 'Escape returns to previous section')
   await waitForAudio(`audio === window.originalAudio && audio.src === ${JSON.stringify(mp3)} && !audio.paused`, 'lyrics mode never replaces playback')
 
-  await verifyFullPlayer({ player, run, click, waitFor, waitForAudio, mp3, flac, screenshotFolder })
+  if (v8) {
+    await click('Текст песни')
+    await waitFor('!document.querySelector("#song-lyrics").parentElement.hidden && !!document.querySelector(".text-music .lyrics-lines")', 'lyrics tab remembers synchronization mode')
+    assert.equal(await run('getComputedStyle(document.querySelector(".lyrics-lines")).scrollbarWidth'), 'none')
+    await click('Библиотека')
+  }
+  await verifyFullPlayer({ player, run, click, waitFor, waitForAudio, mp3, flac, screenshotFolder, v8 })
 
   await click('Настройки')
   await click('Открыть мини-плеер')
+  const miniDeadline = Date.now() + 5000
+  while ((!getMini()?.isVisible() || player.isVisible()) && Date.now() < miniDeadline) await delay(40)
   const mini = getMini()
   assert.ok(mini)
   const miniRun = (script, gesture = false) => mini.webContents.executeJavaScript(script, gesture)
@@ -210,6 +250,13 @@ export async function verifyPlayerExperience({ player, folder, run, click, waitF
   callbacks.get(bindings.next)()
   await waitForAudio(`!audio.paused && audio.src === ${JSON.stringify(flac)}`, 'mini next')
   await waitMini('document.querySelector(".mini-player .track-name")?.textContent === "Test Tone FLAC"')
+  if (v8) {
+    const { playback: snapshot } = await miniRun('window.miniPlayer.getState()')
+    await miniRun(`window.miniPlayer.control({type:'seek', entryId:${JSON.stringify(snapshot.entryId)}, seconds:3.25})`)
+    await waitForAudio('audio.currentTime >= 3.25', 'seek past restart threshold')
+    await miniClick('Предыдущий трек')
+    await waitForAudio(`!audio.paused && audio.src === ${JSON.stringify(flac)} && audio.currentTime < 1`, 'first previous tap restarts current track')
+  }
   await miniClick('Предыдущий трек')
   await waitForAudio(`!audio.paused && audio.src === ${JSON.stringify(mp3)}`, 'mini previous')
   await miniClick('Поверх других окон')
@@ -234,7 +281,30 @@ export async function verifyPlayerExperience({ player, folder, run, click, waitF
   await waitForAudio('audio === window.originalAudio && !audio.paused', 'native close restores playing main window')
   assert.equal(player.isVisible(), true)
 
+  if (v8) {
+    const compact = await openMini()
+    const miniCover = '.mini-player .player-cover-button'
+    const readyBy = Date.now() + 5_000
+    while (!await compact.webContents.executeJavaScript('!!document.querySelector(' + JSON.stringify(miniCover) + ')')) {
+      if (Date.now() > readyBy) assert.fail('Mini cover never rendered')
+      await delay(40)
+    }
+    const closed = once(compact, 'closed', { signal: AbortSignal.timeout(5_000) })
+    await Promise.all([closed, compact.webContents.executeJavaScript(`document.querySelector('${miniCover}').click()`, true)
+      .catch(error => { if (!compact.isDestroyed() && !/Render frame was disposed/.test(String(error))) throw error })])
+    await waitFor('document.querySelector("dialog.full-player").open', 'mini cover opens fullscreen')
+    assert.equal(player.isFullScreen(), true)
+    await waitForAudio('audio === window.originalAudio && !audio.paused', 'mini to fullscreen keeps audio')
+    await click('Свернуть полноэкранный плеер')
+    const deadline = Date.now() + 5000
+    while (player.isFullScreen() && Date.now() < deadline) await delay(40)
+    assert.equal(player.isFullScreen(), false)
+  }
   await click('Shuffle')
+  if (v8) {
+    await click('Таймер сна')
+    await waitFor('!!document.querySelector(".sleep-controls")', 'timer opens from the player')
+  }
   await click('После текущего трека')
   await waitForAudio('!audio.paused && audio.volume < 0.42', 'sleep timer fades')
   await click('Отменить таймер')
@@ -243,6 +313,10 @@ export async function verifyPlayerExperience({ player, folder, run, click, waitF
   await click('Следующий трек')
   await waitForAudio(`!audio.paused && audio.src === ${JSON.stringify(flac)} && Math.abs(audio.volume - 0.42) < 0.001`, 'manual track change cancels track timer')
   await waitFor('!document.querySelector(".sleep-remaining")', 'timer clears on track change')
+  if (v8 && !await run('!!document.querySelector(".sleep-menu:popover-open")')) {
+    await click('Таймер сна')
+    await waitFor('!!document.querySelector(".sleep-controls")', 'timer can reopen')
+  }
   await click('После текущего трека')
   const beforeEnd = (await sessionState()).queue.current
   await finishTrack()
@@ -258,7 +332,7 @@ export async function verifyPlayerExperience({ player, folder, run, click, waitF
     await run('window.sleepClock += 295000')
     await waitForAudio('!audio.paused && Math.abs(audio.volume - 0.21) < 0.001', 'deadline fade')
     await run(`(() => {
-      const volume = document.querySelector('input[aria-label="Громкость"]')
+      const volume = document.querySelector('footer input[aria-label="Громкость"]')
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(volume, '60')
       volume.dispatchEvent(new Event('input', { bubbles: true }))
     })()`)
@@ -275,7 +349,7 @@ export async function verifyPlayerExperience({ player, folder, run, click, waitF
   }
 }
 
-async function verifyFullPlayer({ player, run, click, waitFor, waitForAudio, mp3, flac, screenshotFolder }) {
+async function verifyFullPlayer({ player, run, click, waitFor, waitForAudio, mp3, flac, screenshotFolder, v8 }) {
   const modal = 'document.querySelector("dialog.full-player")'
   const stage = modal + '.querySelector(".full-player-stage")'
   const cover = modal + '.querySelector(".full-player-cover")'
@@ -323,7 +397,15 @@ async function verifyFullPlayer({ player, run, click, waitFor, waitForAudio, mp3
   await waitForAudio('audio.volume === 1', 'fullscreen volume can return to 100%')
   await press('Звуковые эффекты')
   await waitFor(`!!${modal}.querySelector(".sound-menu:popover-open")`, 'fullscreen opens sound presets')
+  if (v8) {
+    assert.equal(await run(`getComputedStyle(${fullVolume}.parentElement).backgroundColor`), 'rgba(0, 0, 0, 0)')
+  }
   await run(`${modal}.querySelector(".sound-menu").hidePopover()`)
+  if (v8) {
+    await press('Дополнительно')
+    await waitFor('!!document.querySelector("#full-player-menu .sleep-panel") && !!document.querySelector("#full-player-menu .disco-setting input")', 'fullscreen actions have timer and disco')
+    await run('document.querySelector("#full-player-menu").hidePopover()')
+  }
   await press('Пауза')
   await waitForAudio('audio === window.originalAudio && audio.paused', 'fullscreen pauses the same audio')
   await run(`(() => {
@@ -383,10 +465,12 @@ async function verifyFullPlayer({ player, run, click, waitFor, waitForAudio, mp3
   await waitFor(`!${control('Предыдущий трек')}.disabled`, 'previous track is available in fullscreen')
   await press('Предыдущий трек')
   await waitFor(`${lines}?.querySelectorAll("button").length === 2`, 'fullscreen restores synchronized lyrics on the previous track')
-  await press('Дополнительно')
-  await waitFor('!!document.querySelector("#full-player-menu:popover-open")', 'fullscreen actions menu opens')
-  await run('document.querySelector("#full-player-menu button").click()', true)
-  await waitFor(`${modal}.querySelector(".lyrics-plain")?.textContent.includes("Вторая строка")`, 'actions menu opens reading mode')
+  if (!v8) {
+    await press('Дополнительно')
+    await waitFor('!!document.querySelector("#full-player-menu:popover-open")', 'fullscreen actions menu opens')
+    await run('document.querySelector("#full-player-menu button").click()', true)
+    await waitFor(`${modal}.querySelector(".lyrics-plain")?.textContent.includes("Вторая строка")`, 'actions menu opens reading mode')
+  }
   await press('Свернуть полноэкранный плеер')
   await waitFor(`!${modal}.open && !document.fullscreenElement && document.activeElement === ${opener}`, 'collapse returns focus and exits fullscreen')
   await click('На весь экран')

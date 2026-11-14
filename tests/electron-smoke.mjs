@@ -21,7 +21,8 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
   await app.whenReady()
   const player = await eventually(() => BrowserWindow.getAllWindows()[0], 'Electron window')
   const { webContents } = player
-  const mustplay = !app.isPackaged || app.getVersion() === '0.7.0'
+  const v8 = !app.isPackaged || app.getVersion() === '0.8.0'
+  const mustplay = v8 || app.getVersion() === '0.7.0'
   const rendererApi = mustplay ? 'window.mustplay' : 'window.musicPlayer'
   const origin = mustplay ? 'mustplay://app' : 'music-player://app'
   const run = (script, gesture = false) => webContents.executeJavaScript(
@@ -67,9 +68,10 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     select.dispatchEvent(new Event('change', { bubbles: true }))
   })()`)
 
+  const importLabel = v8 ? 'Добавить папку' : 'Выбрать папку'
   await waitFor('document.querySelector("h1")?.innerText === "Библиотека"', 'library UI')
   await waitFor(`${buttons}.some(button => button.getClientRects().length &&
-    button.innerText.includes('Выбрать папку') && !button.disabled)`, 'library initialized')
+    button.innerText.includes(${JSON.stringify(importLabel)}) && !button.disabled)`, 'library initialized')
   const modern = !app.isPackaged || !['0.1.1', '0.2.0', '0.3.0'].includes(app.getVersion())
   const playerExperience = mustplay || app.getVersion() === '0.6.0'
   const explainable = playerExperience || app.getVersion() === '0.5.0'
@@ -119,7 +121,9 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
           'onPlaybackCommand', 'getShortcuts', 'setShortcut', 'setShortcutCapture', 'rescanLibrary',
           'getWavePulse', 'setWavePulse'] : [],
         mustplay ? ['getInterfaceScale', 'setInterfaceScale', 'getSoundEffect', 'setSoundEffect', 'setTheme',
-          'setReverb', 'getDiscoMode', 'setDiscoMode', 'publishDiscoBeat'] : []).sort()
+          'setReverb', 'getDiscoMode', 'setDiscoMode', 'publishDiscoBeat'] : [],
+        v8 ? ['getMusicFolders', 'removeMusicFolder', 'getCursorSettings', 'setCursorPreset', 'importCursorPreset',
+          'onShowFullPlayer', 'exitMiniFullscreen', 'getLyricsMode', 'setLyricsMode'] : []).sort()
   assert.deepEqual(await run(`({
     process: typeof window.process,
     require: typeof window.require,
@@ -145,7 +149,72 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
   const pendingRows = () => run(`[...document.querySelectorAll('[data-queue-entry]')].map(row => ({
     id: row.dataset.queueEntry, title: row.firstElementChild.getAttribute('title')
   }))`)
-  const setRepeat = value => choose('Режим повтора', value)
+  const setRepeat = async value => {
+    if (!v8) return choose('Режим повтора', value)
+    for (let step = 0; step < 3; step++) {
+      if (await run(`document.querySelector('footer .repeat-control').dataset.repeat`) === value) return
+      await click('Режим повтора')
+    }
+    assert.fail('Repeat cycle did not reach ' + value)
+  }
+
+  if (phase === 'audio-formats') {
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] })
+    await click(importLabel)
+    await waitFor('document.querySelectorAll("tbody tr").length === 8 && !document.querySelector(".track-button").disabled', 'supported formats in library')
+    const result = await run('window.mustplay.importFolder()')
+    assert.equal(result.status, 'complete')
+    assert.deepEqual(result.issues, [
+      { entry: 'broken.mp3', reason: 'file-unreadable' },
+      { entry: 'lossless-apple.m4a', reason: 'codec-unsupported' },
+    ])
+    await click('Без звука')
+    const tracks = result.tracks
+    const mimes = {
+      aac: 'audio/aac', m4a: 'audio/mp4', wav: 'audio/wav', ogg: 'audio/ogg', opus: 'audio/ogg', webm: 'audio/webm',
+    }
+    for (const [format, mime] of Object.entries(mimes)) {
+      const track = tracks.find(track => track.format === format)
+      assert.ok(track?.available, 'Imported ' + format)
+      const { url } = await run('window.mustplay.getPlayableSource(' + JSON.stringify(track.id) + ')')
+      const result = await run('fetch(' + JSON.stringify(url) +
+        ', {headers:{range:"bytes=0-31"}}).then(async res => [res.status,res.headers.get("content-type"),(await res.arrayBuffer()).byteLength])')
+      assert.deepEqual(result, [206, mime, 32])
+      await click(track.title)
+      await waitForAudio(advancing + ' && audio.src === ' + JSON.stringify(url), 'decode ' + format)
+    }
+    return
+  }
+
+  if (phase === 'folder-exclusion') {
+    const nested = join(folder, 'Nested')
+    await mkdir(nested)
+    await rename(join(folder, '02.flac'), join(nested, '02.flac'))
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] })
+    await click(importLabel)
+    await waitFor('document.querySelectorAll("tbody tr").length === 2', 'parent and child audio imported')
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [nested] })
+    await click(importLabel)
+    await waitFor('document.querySelector(".music-folders summary")?.textContent.endsWith("(2)")', 'both music folders are listed')
+    await click('Test Tone MP3')
+    const source = await waitForAudio(advancing, 'playing audio from parent folder')
+    const folders = await run('window.mustplay.getMusicFolders()')
+    const mp3Track = (await run('window.mustplay.getTracks()')).find(track => track.format === 'mp3')
+    await assert.rejects(run('window.mustplay.removeMusicFolder("C:/Music")'), /Renderer script failed/)
+    await run('document.querySelector(".music-folders summary").click()')
+    await click('Исключить папку ' + folders[0].label)
+    await waitFor('document.querySelectorAll("tbody tr").length === 1 && !document.querySelector("audio").hasAttribute("src")', 'removal stops excluded playback and retains overlapping folder')
+    assert.equal((await sessionState()).queue.current, null)
+    assert.equal(await run('window.mustplay.getPlayableSource(' + JSON.stringify(mp3Track.id) + ')'), null)
+    assert.equal(await run('fetch(' + JSON.stringify(source) + ').then(res => res.status)'), 404)
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] })
+    await click(importLabel)
+    await waitFor('document.querySelectorAll("tbody tr").length === 2', 'removed folder can be imported again')
+    const restored = (await run('window.mustplay.getTracks()')).find(track => track.format === 'mp3')
+    assert.equal(restored.id, mp3Track.id)
+    assert.notEqual((await run('window.mustplay.getPlayableSource(' + JSON.stringify(restored.id) + ')')).url, source)
+    return
+  }
 
   if (phase === 'library-rescan') {
     const empty = join(folder, 'Позже')
@@ -153,8 +222,8 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     await click('Обновить')
     await waitFor('document.querySelector("main").innerText.includes("Сначала выберите папку")', 'empty profile suggests importing')
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [empty] })
-    await click('Выбрать папку')
-    await waitFor('document.querySelector("main").innerText.includes("В папке нет доступных")', 'empty folder registered')
+    await click(importLabel)
+    await waitFor('document.querySelector("main").innerText.includes("В папке нет")', 'empty folder registered')
     const mp3 = join(folder, '01.mp3')
     await copyFile(mp3, join(empty, 'later.mp3'))
     let dialogs = 0
@@ -173,7 +242,7 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     await waitFor('document.querySelectorAll("tbody tr").length === 1', 'original folder survives restart')
     const [original] = await run('window.mustplay.getTracks()')
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [other] })
-    await click('Выбрать папку')
+    await click(importLabel)
     await waitFor('document.querySelectorAll("tbody tr").length === 2', 'second folder imported')
     await rename(empty, join(folder, 'Перемещённая папка'))
     await copyFile(join(folder, '01.mp3'), join(other, 'new.mp3'))
@@ -194,7 +263,7 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
 
   if (phase === 'experience' || phase === 'experience-restart') {
     await verifyPlayerExperience({
-      player, folder, run, click, waitFor, waitForAudio, choose, finishTrack, sessionState,
+      player, folder, run, click, waitFor, waitForAudio, choose, finishTrack, sessionState, setRepeat, importLabel, v8,
       restart: phase === 'experience-restart',
     })
     return
@@ -261,7 +330,7 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     await waitFor('!!document.querySelector(".shell > .disco-layer")', 'disco enabled')
     await click('Библиотека')
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] })
-    await click('Выбрать папку')
+    await click(importLabel)
     await waitFor('document.querySelectorAll("tbody tr").length === 2 && !document.querySelector(".track-button").disabled', 'effect catalog')
     await click('Test Tone MP3')
     await waitForAudio(advancing, 'original starts')
@@ -290,7 +359,7 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
   }
 
   if (phase === 'interface') {
-    await verifyInterface({ player, run, click, waitFor, waitForAudio, folder, pendingRows })
+    await verifyInterface({ player, run, click, waitFor, waitForAudio, folder, pendingRows, importLabel, v8 })
     return
   }
 
@@ -314,7 +383,7 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
       }
     })()`)
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] })
-    await click('Выбрать папку')
+    await click(importLabel)
     await waitFor('document.querySelectorAll("tbody tr").length === 2', 'Wave queue catalog')
     await openWave()
     await waitFor(`!(${waveStart}).disabled`, 'Wave ready')
@@ -387,7 +456,7 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
 
   if (phase === 'queue-import') {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] })
-    await click('Выбрать папку')
+    await click(importLabel)
     await waitFor('document.querySelectorAll("tbody tr").length === 2', 'queue catalog')
     await waitFor('!document.querySelector(".track-button").disabled', 'session loaded')
     const [mp3Track, flacTrack] = await run('window.mustplay.getTracks()')
@@ -479,7 +548,7 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     if (modern) await click('Открыть библиотеку')
     assert.deepEqual(await run('window.mustplay.getWaveQueue()'), [])
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] })
-    await click('Выбрать папку')
+    await click(importLabel)
     await waitFor('document.querySelectorAll("tbody tr").length === 2', 'imported wave catalog')
     await waitFor('!document.querySelector("tbody img") && document.querySelectorAll("tbody .artwork").length === 2', 'fallback artwork')
     await waitFor('!document.querySelector(\'input[aria-label="Громкость"]\').disabled', 'volume preference loaded')
@@ -597,7 +666,7 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     await checkWaveMode('balance')
     if (modern) await click('Библиотека')
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] })
-    await click('Выбрать папку')
+    await click(importLabel)
     await waitFor('document.querySelectorAll("tbody tr").length === 2', 'catalog for playlists')
     const tracks = await run('window.mustplay.getTracks()')
     const mp3Id = tracks.find(track => track.format === 'mp3').id
@@ -709,7 +778,9 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
         window.mustplay.getWavePulse(), window.mustplay.setWavePulse(0), window.mustplay.setTheme('light'),
         window.mustplay.getInterfaceScale(), window.mustplay.setInterfaceScale(125),
         window.mustplay.getSoundEffect(), window.mustplay.setSoundEffect('slowed'), window.mustplay.setReverb('slowed', true),
-        window.mustplay.getDiscoMode(), window.mustplay.setDiscoMode(true), window.mustplay.publishDiscoBeat(1)]
+        window.mustplay.getDiscoMode(), window.mustplay.setDiscoMode(true), window.mustplay.publishDiscoBeat(1),
+        ...(['getMusicFolders', 'removeMusicFolder', 'getCursorSettings', 'setCursorPreset', 'importCursorPreset',
+          'exitMiniFullscreen', 'getLyricsMode', 'setLyricsMode'].filter(key => key in window.mustplay).map(key => window.mustplay[key]()))]
         .map(result => result.then(() => 'unexpectedly accepted', error => error.message))
     )`)
     for (const refusal of refusals) assert.match(refusal, /IPC sender denied/)
@@ -723,7 +794,7 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     assert.ok(options.properties.includes('openDirectory'))
     return { canceled: false, filePaths: [folder] }
   }
-  await click('Выбрать папку')
+  await click(importLabel)
   await waitFor('document.querySelectorAll("tbody tr").length === 2', 'two imported tracks')
   const library = await run('document.querySelector("main").innerText')
   assert.match(library, /Test Tone MP3/)

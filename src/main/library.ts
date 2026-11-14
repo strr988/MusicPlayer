@@ -1,12 +1,14 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { lstat, open, readdir, realpath } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import { basename, extname, isAbsolute, join, relative, sep } from 'node:path'
 import { parseFile, parseStream } from 'music-metadata'
-import type { ImportIssue, ImportResult, LibraryTrack, Track, ListeningDataReader, PlaybackEventInput, PlaybackSession, VolumePreference, WaveMode } from '../shared/contracts'
+import type { ImportIssue, ImportResult, LibraryTrack, LyricsMode, Track, ListeningDataReader, PlaybackEventInput, PlaybackSession, VolumePreference, WaveMode } from '../shared/contracts'
 import type { RecommendationCandidate } from '../recommendations/engine'
 import { LibraryStore } from './library-store'
-import type { LocalSource, ScanEntry } from './library-store'
+import type { CursorImage, LocalSource, ScanEntry } from './library-store'
+import { audioFormatForPath, matchesAudioFormat } from './audio-formats'
+import { filterPlaybackSession } from './playback-session'
 import { fileIdentity, moveKey, sameFile, sameIdentity } from './local-file'
 import type { FileIdentity } from './local-file'
 import type { InterfaceScale, RescanResult, ShortcutAction, SoundEffect, SoundSettings, Theme } from '../shared/contracts'
@@ -19,8 +21,13 @@ interface ScannedFile {
 
 type CompletedImport = Extract<ImportResult, { status: 'complete' }>
 class FormatMismatch extends Error {}
+class UnsupportedCodec extends Error {}
 const metadataLimit = 8 * 1024 * 1024
 const metadataOptions = { skipCovers: true, maxMemoryAllocation: metadataLimit, maxMetadataEntries: 10_000 }
+
+function folderId(path: string): string {
+  return createHash('sha256').update(path).digest('hex')
+}
 
 function isWithin(root: string, file: string): boolean {
   const name = relative(root, file)
@@ -108,13 +115,27 @@ export class Library implements ListeningDataReader {
   getSoundEffect(): SoundSettings { return this.store.getSoundEffect() }
   setSoundEffect(effect: SoundEffect): void { this.store.setSoundEffect(effect) }
   setReverb(effect: SoundEffect, enabled: boolean): void { this.store.setReverb(effect, enabled) }
+  getLyricsMode() { return this.store.getLyricsMode() }
+  setLyricsMode(mode: LyricsMode) { this.store.setLyricsMode(mode) }
+  getCursorSettings() { return this.store.getCursorSettings() }
+  setCursorPreset(id: string) { this.store.setCursorPreset(id); return this.getCursorSettings() }
+  importCursorPreset(label: string, arrow: CursorImage, pointer: CursorImage) {
+    this.store.importCursorPreset(randomUUID(), label, arrow, pointer)
+    return this.getCursorSettings()
+  }
+  readCursorImage(id: string, kind: 'arrow' | 'pointer') { return this.store.readCursorImage(id, kind) }
   getDiscoMode(): boolean { return this.store.getDiscoMode() }
   setDiscoMode(enabled: boolean): void { this.store.setDiscoMode(enabled) }
   getMiniPinned(): boolean { return this.store.getMiniPinned() }
   setMiniPinned(pinned: boolean): void { this.store.setMiniPinned(pinned) }
   getShortcuts() { return this.store.getShortcuts() }
   setShortcut(action: ShortcutAction, accelerator: string | null): void { this.store.setShortcut(action, accelerator) }
-  getPlaybackSession() { return this.store.getPlaybackSession() }
+  getPlaybackSession() {
+    const session = this.store.getPlaybackSession()
+    if (!session) return null
+    const excluded = this.store.getExcludedTrackIds()
+    return excluded.size ? filterPlaybackSession(session, id => !excluded.has(id)) : session
+  }
   setPlaybackSession(session: PlaybackSession): void { this.store.setPlaybackSession(session) }
 
   getWaveMode() { return this.store.getWaveMode() }
@@ -188,6 +209,26 @@ export class Library implements ListeningDataReader {
     })
   }
 
+  getMusicFolders() {
+    // Only a display label crosses IPC; all operations use opaque IDs.
+    return this.store.getImportedFolders().map(path => ({
+      id: folderId(path), label: path.split(sep).filter(Boolean).slice(-2).join(' / ') || 'Корневая папка',
+    }))
+  }
+
+  removeMusicFolder(id: string) {
+    return this.enqueueScan(async () => {
+      const roots = this.store.getImportedFolders()
+      const root = roots.find(path => folderId(path) === id)
+      if (!root) throw new Error('Unknown music folder')
+      const remaining = roots.filter(path => path !== root)
+      const exclude = this.store.getLocalSources().filter(source => isWithin(root, source.path) &&
+        !remaining.some(path => isWithin(path, source.path)))
+      this.store.removeImportedFolder(root, exclude.map(source => source.id))
+      return { tracks: this.getTracks(), folders: this.getMusicFolders() }
+    })
+  }
+
   rescanLibrary(): Promise<RescanResult> {
     return this.enqueueScan(async () => {
       const folders = this.store.getImportedFolders()
@@ -234,14 +275,14 @@ export class Library implements ListeningDataReader {
         }
         if (!entry.isFile()) continue
 
-        const extension = extname(path).toLowerCase()
-        if (extension !== '.mp3' && extension !== '.flac') continue
+        const format = audioFormatForPath(extname(path).toLowerCase())
+        if (!format) continue
         try {
           const canonical = await realpath(path)
           if (canonical !== path || !isWithin(root, canonical)) throw new Error('File moved')
-          files.push(await this.readFile(canonical, extension === '.mp3' ? 'mp3' : 'flac'))
+          files.push(await this.readFile(canonical, format))
         } catch (error) {
-          issues.push({ entry: relative(root, path), reason: error instanceof FormatMismatch ? 'format-mismatch' : 'file-unreadable' })
+          issues.push({ entry: relative(root, path), reason: error instanceof UnsupportedCodec ? 'codec-unsupported' : error instanceof FormatMismatch ? 'format-mismatch' : 'file-unreadable' })
         }
       }
     }
@@ -252,7 +293,7 @@ export class Library implements ListeningDataReader {
   }
 
   private async saveScan(root: string, files: ScannedFile[]): Promise<void> {
-    const previous = this.store.getLocalSources()
+    const previous = this.store.getLocalSources(true)
     const byPath = new Map(previous.map((source) => [source.path, source]))
     const byMoveKey = new Map<string, LocalSource | null>()
     for (const source of previous) {
@@ -281,7 +322,7 @@ export class Library implements ListeningDataReader {
       const track = { id: existing?.trackId ?? randomUUID(), ...file.tags }
       const source = {
         // Revoke the old media URL when the bytes, timestamps or path change.
-        id: existing?.path === file.path && sameIdentity(existing.identity, file.identity) ? existing.id : randomUUID(),
+        id: existing?.path === file.path && !existing.excluded && sameIdentity(existing.identity, file.identity) ? existing.id : randomUUID(),
         trackId: track.id,
         path: file.path,
         format: track.format,
@@ -292,7 +333,7 @@ export class Library implements ListeningDataReader {
 
     const availability = new Map<string, boolean>()
     for (const source of previous) {
-      if (isWithin(root, source.path) && !refreshedSources.has(source.id)) {
+      if (!source.excluded && isWithin(root, source.path) && !refreshedSources.has(source.id)) {
         availability.set(source.id, await isAvailable(source))
       }
     }
@@ -310,7 +351,8 @@ export class Library implements ListeningDataReader {
     })
     const container = tags.format.container?.toLowerCase()
     if (!container) throw new Error('Unrecognized audio')
-    if (format === 'flac' ? container !== 'flac' : container !== 'mpeg' || !tags.format.codec?.endsWith('Layer 3')) {
+    if (format === 'm4a' && tags.format.codec === 'ALAC') throw new UnsupportedCodec('Apple Lossless (ALAC)')
+    if (!matchesAudioFormat(format, container, tags.format.codec ?? '')) {
       throw new FormatMismatch('Audio format does not match the file extension')
     }
     if (await realpath(path) !== path || !sameFile(identity, await lstat(path, { bigint: true }))) {
