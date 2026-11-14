@@ -31,7 +31,7 @@ export function LyricsPanel({ track, active, audio, canSeek, seek, mode, changeM
   useEffect(() => {
     if (!trackId || !available) return
     let current = true
-    void window.musicPlayer.getLyrics(trackId).then(lyrics => {
+    void window.mustplay.getLyrics(trackId).then(lyrics => {
       if (current) setResult({ lyrics })
     }).catch(() => {
       if (current) setResult('error')

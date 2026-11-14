@@ -1,4 +1,4 @@
-# Производительность Music Player 0.4.1
+# Производительность mustplay 0.4.1
 
 ## Методика
 
@@ -41,16 +41,16 @@
 
 ## Повторение
 
-Соберите обе версии с зафиксированным lockfile. Сохраните `out` из `fc3abe3` в отдельной папке. Из рабочего дерева 0.4.1 выполните команды ниже. Путь к базовой сборке задаётся переменной `MUSIC_PLAYER_PROFILE_BUILD`.
+Соберите обе версии с зафиксированным lockfile. Сохраните `out` из `fc3abe3` в отдельной папке. Из рабочего дерева 0.4.1 выполните команды ниже. Путь к базовой сборке задаётся переменной `MUSTPLAY_PROFILE_BUILD`.
 
 ```powershell
-$env:MUSIC_PLAYER_PROFILE_BUILD = (Resolve-Path .\release\0.4.1-review\baseline-build).Path
-$env:MUSIC_PLAYER_PROFILE_OUTPUT = Join-Path (Get-Location) 'release\0.4.1-review\before-final.json'
+$env:MUSTPLAY_PROFILE_BUILD = (Resolve-Path .\release\0.4.1-review\baseline-build).Path
+$env:MUSTPLAY_PROFILE_OUTPUT = Join-Path (Get-Location) 'release\0.4.1-review\before-final.json'
 node scripts/profile-library.mjs
-Remove-Item Env:MUSIC_PLAYER_PROFILE_BUILD
-$env:MUSIC_PLAYER_PROFILE_OUTPUT = Join-Path (Get-Location) 'release\0.4.1-review\after-final.json'
+Remove-Item Env:MUSTPLAY_PROFILE_BUILD
+$env:MUSTPLAY_PROFILE_OUTPUT = Join-Path (Get-Location) 'release\0.4.1-review\after-final.json'
 node scripts/profile-library.mjs
-Remove-Item Env:MUSIC_PLAYER_PROFILE_OUTPUT
+Remove-Item Env:MUSTPLAY_PROFILE_OUTPUT
 ```
 
 В следующем релизе стоит измерить отдельно холодный запуск с заполненной SQLite, проверку доступности 10 000 путей на SSD и HDD, а также сканирование обложек с уникальными изображениями. Если пользователям нужна непрерывная прокрутка всего каталога, можно сравнить виртуализацию с текущей постраничной навигацией на той же нагрузке, включая Tab, экранный диктор и восстановление фокуса.

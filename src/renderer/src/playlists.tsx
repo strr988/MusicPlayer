@@ -19,7 +19,7 @@ interface Props {
 }
 
 export function Playlists({ active, tracks, playbackReady, request, onPlay, refreshTracks, onQueue }: Props) {
-  const api = window.musicPlayer
+  const api = window.mustplay
   const [playlists, setPlaylists] = useState<Playlist[] | null>(null)
   const [selectedId, setSelectedId] = useState('')
   const [pending, setPending] = useState(false)

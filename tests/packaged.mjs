@@ -10,13 +10,14 @@ import { test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 
-const { version } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
-const archive = fileURLToPath(new URL(`../release/MusicPlayer-${version}-win-x64.zip`, import.meta.url))
+const { name, productName, version } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
+const archive = fileURLToPath(new URL(`../release/${name}-${version}-win-x64.zip`, import.meta.url))
 const harness = fileURLToPath(new URL('./electron-smoke.mjs', import.meta.url))
 
 async function verifyExe(directory, cwd, profile, folder, phase, expectedVersion = version) {
   // The test uses a one-shot inspector on loopback. The ZIP needs no test entrypoint.
-  const executable = join(directory, 'Music Player.exe')
+  const expectedName = expectedVersion === version ? productName : 'Music Player'
+  const executable = join(directory, `${expectedName}.exe`)
   const env = { ...process.env }
   for (const name of ['NODE_PATH', 'NODE_OPTIONS', 'ELECTRON_RUN_AS_NODE', 'ELECTRON_RENDERER_URL']) {
     delete env[name]
@@ -78,7 +79,7 @@ async function verifyExe(directory, cwd, profile, folder, phase, expectedVersion
         await app.whenReady()
         const { join } = require('node:path')
         assert.equal(app.isPackaged, true)
-        assert.equal(app.getName(), 'Music Player')
+        assert.equal(app.getName(), ${JSON.stringify(expectedName)})
         assert.equal(app.getVersion(), ${JSON.stringify(expectedVersion)})
         assert.equal(app.getPath('userData'), ${JSON.stringify(profile)})
         const preload = join(app.getAppPath(), 'out', 'preload', 'index.cjs')
@@ -93,7 +94,7 @@ async function verifyExe(directory, cwd, profile, folder, phase, expectedVersion
     const [code, signal] = await Promise.race([closed, timedOut])
     assert.equal(signal, null)
     assert.equal(code, 0)
-    assert.doesNotMatch(log, /Music Player failed to start|Uncaught Exception|FATAL:/i)
+    assert.doesNotMatch(log, /(?:mustplay|Music Player) failed to start|Uncaught Exception|FATAL:/i)
   } catch (error) {
     throw new Error(`${phase} failed\n${log}`, { cause: error })
   } finally {
@@ -105,11 +106,11 @@ async function verifyExe(directory, cwd, profile, folder, phase, expectedVersion
 
 async function prepareRelease(t) {
   const temp = await realpath(tmpdir())
-  const root = await mkdtemp(join(temp, 'music-player-release-'))
+  const root = await mkdtemp(join(temp, 'mustplay-release-'))
   t.after(async () => {
     const actual = await realpath(root)
     assert.equal(dirname(actual), temp)
-    assert.ok(basename(actual).startsWith('music-player-release-'))
+    assert.ok(basename(actual).startsWith('mustplay-release-'))
     await rm(actual, { recursive: true, force: true, maxRetries: 5 })
   })
   const launch = join(root, 'Распаковка ZIP')
@@ -119,7 +120,7 @@ async function prepareRelease(t) {
   await mkdir(folder)
   await assert.rejects(access(profile), { code: 'ENOENT' })
   unpack(archive, launch)
-  const app = join(launch, `Music Player ${version}`)
+  const app = join(launch, `${productName} ${version}`)
   await assert.rejects(access(join(app, 'Demo audio')), { code: 'ENOENT' })
   const mp3 = join(folder, '01.mp3')
   const flac = join(folder, '02.flac')
@@ -173,13 +174,13 @@ test('unpacked Windows ZIP removes previously imported demo tracks and the stale
     db.prepare("INSERT INTO tracks VALUES (?, 'Test Tone MP3', 'Fixture Artist', 'Fixture Album', 4, '[]', 'mp3')").run(track)
     db.prepare("INSERT INTO sources VALUES (?, ?, 'local', ?, 0)").run(source, track, join(demo, '01-tone.mp3'))
     db.prepare("INSERT INTO local_files VALUES (?, '1', '2', '3', '4', '5', '6')").run(source)
-    db.exec('DROP TABLE appearance_settings; PRAGMA user_version = 6')
+    db.exec('DROP TABLE preset_reverb; DROP TABLE playback_effect; DROP TABLE appearance_settings; PRAGMA user_version = 6')
   }
   // The rescan harness checks that only the previously imported user track is present at launch.
   await verifyExe(app, root, profile, folder, 'library-rescan-restart')
   using db = new DatabaseSync(database, { readOnly: true })
   assert.equal(db.prepare('SELECT 1 FROM imported_folders WHERE path = ?').get(demo), undefined)
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 8)
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 11)
 })
 
 test('unpacked Windows ZIP restores the advanced playback session silently', { timeout: 90_000 }, async (t) => {
@@ -195,7 +196,7 @@ test('unpacked Windows ZIP opens an experimental schema 7 profile and restores l
   const original = join(profile, 'library.sqlite3')
   {
     using db = new DatabaseSync(original)
-    db.exec(`DROP TABLE appearance_settings; DROP TABLE mini_player; DROP TABLE global_shortcuts;
+    db.exec(`DROP TABLE preset_reverb; DROP TABLE playback_effect; DROP TABLE appearance_settings; DROP TABLE mini_player; DROP TABLE global_shortcuts;
       CREATE TABLE stream_tracks (id TEXT PRIMARY KEY) STRICT;
       CREATE TABLE stream_settings (id INTEGER PRIMARY KEY) STRICT;
       PRAGMA user_version = 7`)
@@ -205,7 +206,7 @@ test('unpacked Windows ZIP opens an experimental schema 7 profile and restores l
   await verifyExe(app, root, profile, folder, 'queue-restart')
   assert.deepEqual(await readFile(original), before)
   using recovered = new DatabaseSync(join(profile, 'library-player-experience.sqlite3'), { readOnly: true })
-  assert.equal(recovered.prepare('PRAGMA user_version').get().user_version, 8)
+  assert.equal(recovered.prepare('PRAGMA user_version').get().user_version, 11)
   assert.equal(recovered.prepare('SELECT count(*) AS count FROM tracks').get().count, 2)
   assert.equal(recovered.prepare("SELECT name FROM sqlite_schema WHERE name LIKE 'stream_%'").get(), undefined)
 })
@@ -218,8 +219,29 @@ test('unpacked Windows ZIP runs the player experience and restores its settings'
   await verifyExe(app, root, profile, folder, 'experience-restart')
 })
 
-const playerBaselineArchive = process.env.MUSIC_PLAYER_050_ZIP
-test('upgrades the 0.5.0 profile to schema 8 and backs up its queue', { skip: !playerBaselineArchive, timeout: 90_000 }, async t => {
+test('unpacked Windows ZIP restores interface scale and the audio effect', { timeout: 90_000 }, async t => {
+  const { root, folder, profile, app } = await prepareRelease(t)
+  await verifyExe(app, root, profile, folder, 'scale-effects')
+  await verifyExe(app, root, profile, folder, 'scale-effects-restart')
+})
+
+const previousThemeArchive = process.env.MUSTPLAY_060_ZIP
+test('upgrades the original 0.6.0 profile and preserves its queue in schema 11', { skip: !previousThemeArchive, timeout: 90_000 }, async t => {
+  const { root, folder, profile, app, flac } = await prepareRelease(t)
+  unpack(previousThemeArchive, root)
+  await verifyExe(join(root, 'Music Player 0.6.0'), root, profile, folder, 'queue-import', '0.6.0')
+  const database = join(profile, 'library.sqlite3')
+  await rm(flac)
+  await verifyExe(app, root, profile, folder, 'queue-restart')
+  using current = new DatabaseSync(database, { readOnly: true })
+  assert.equal(current.prepare('PRAGMA user_version').get().user_version, 11)
+  assert.equal(current.prepare('SELECT theme FROM appearance_settings').get().theme, 'dark')
+  const backups = (await readdir(profile)).filter(file => /^library\.sqlite3\.v8-.+\.backup$/.test(file))
+  assert.equal(backups.length, 1)
+})
+
+const playerBaselineArchive = process.env.MUSTPLAY_050_ZIP
+test('upgrades the 0.5.0 profile to schema 11 and backs up its queue', { skip: !playerBaselineArchive, timeout: 90_000 }, async t => {
   const { root, folder, profile, app, flac } = await prepareRelease(t)
   unpack(playerBaselineArchive, root)
   await verifyExe(join(root, 'Music Player 0.5.0'), root, profile, folder, 'queue-import', '0.5.0')
@@ -233,13 +255,13 @@ test('upgrades the 0.5.0 profile to schema 8 and backs up its queue', { skip: !p
   const before = snapshot(database, 5)
   await rm(flac)
   await verifyExe(app, root, profile, folder, 'queue-restart')
-  snapshot(database, 8)
+  snapshot(database, 11)
   const backups = (await readdir(profile)).filter(name => /^library\.sqlite3\.v5-.+\.backup$/.test(name))
   assert.equal(backups.length, 1)
   assert.deepEqual(snapshot(join(profile, backups[0]), 5), before)
 })
 
-const legacyArchive = process.env.MUSIC_PLAYER_011_ZIP
+const legacyArchive = process.env.MUSTPLAY_011_ZIP
 test('upgrades a profile created by the original 0.1.1 Windows ZIP', { skip: !legacyArchive, timeout: 90_000 }, async (t) => {
   const { root, folder, profile, app } = await prepareRelease(t)
   unpack(legacyArchive, root)
@@ -254,13 +276,13 @@ test('upgrades a profile created by the original 0.1.1 Windows ZIP', { skip: !le
   }
   const before = snapshot(3)
   await verifyExe(app, root, profile, folder, 'verify-upgrade')
-  const after = snapshot(8)
+  const after = snapshot(11)
   // Playback in the migrated application appends events to the existing history.
   after[5] = after[5].slice(0, before[5].length)
   assert.deepEqual(after, before)
 })
 
-const previousArchive = process.env.MUSIC_PLAYER_020_ZIP
+const previousArchive = process.env.MUSTPLAY_020_ZIP
 test('migrates a 0.2.0 profile and restores the verified pre-migration backup in the original EXE', { skip: !previousArchive, timeout: 120_000 }, async (t) => {
   const { root, folder, profile, app } = await prepareRelease(t)
   unpack(previousArchive, root)
@@ -272,13 +294,13 @@ test('migrates a 0.2.0 profile and restores the verified pre-migration backup in
     assert.equal(db.prepare('PRAGMA user_version').get().user_version, schema)
     assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), [])
     const tables = db.prepare(`SELECT name FROM sqlite_schema WHERE type = 'table'
-      AND name NOT IN ('playback_session', 'mini_player', 'global_shortcuts', 'appearance_settings') ORDER BY name`).all()
+      AND name NOT IN ('playback_session', 'mini_player', 'global_shortcuts', 'appearance_settings', 'playback_effect', 'preset_reverb') ORDER BY name`).all()
     return Object.fromEntries(tables.map(({ name }) => [name, db.prepare(`SELECT * FROM "${name}" ORDER BY rowid`).all()]))
   }
   const database = join(profile, 'library.sqlite3')
   const before = snapshot(database, 4)
   await verifyExe(app, root, profile, folder, 'verify-v4')
-  assert.deepEqual(snapshot(database, 8), before)
+  assert.deepEqual(snapshot(database, 11), before)
   const backups = (await readdir(profile)).filter(name => /^library\.sqlite3\.v4-.+\.backup$/.test(name))
   assert.equal(backups.length, 1)
   assert.deepEqual(snapshot(join(profile, backups[0]), 4), before)
@@ -289,7 +311,7 @@ test('migrates a 0.2.0 profile and restores the verified pre-migration backup in
   await verifyExe(previous, root, restored, folder, 'verify-v4', '0.2.0')
 })
 
-const queueArchive = process.env.MUSIC_PLAYER_030_ZIP
+const queueArchive = process.env.MUSTPLAY_030_ZIP
 test('restores the playback session written by the original 0.3.0 Windows ZIP', { skip: !queueArchive, timeout: 90_000 }, async (t) => {
   const { root, folder, profile, app, flac } = await prepareRelease(t)
   unpack(queueArchive, root)
@@ -298,8 +320,8 @@ test('restores the playback session written by the original 0.3.0 Windows ZIP', 
   await verifyExe(app, root, profile, folder, 'queue-restart')
 })
 
-const interfaceArchive = process.env.MUSIC_PLAYER_040_ZIP
-test('opens a 0.4.0 profile and restores its session on SQLite schema 8', { skip: !interfaceArchive, timeout: 90_000 }, async (t) => {
+const interfaceArchive = process.env.MUSTPLAY_040_ZIP
+test('opens a 0.4.0 profile and restores its session on SQLite schema 11', { skip: !interfaceArchive, timeout: 90_000 }, async (t) => {
   const { root, folder, profile, app, flac } = await prepareRelease(t)
   unpack(interfaceArchive, root)
   await verifyExe(join(root, 'Music Player 0.4.0'), root, profile, folder, 'queue-import', '0.4.0')
@@ -313,10 +335,10 @@ test('opens a 0.4.0 profile and restores its session on SQLite schema 8', { skip
   const tracks = checkSchema(5)
   await rm(flac)
   await verifyExe(app, root, profile, folder, 'queue-restart')
-  assert.deepEqual(checkSchema(8), tracks)
+  assert.deepEqual(checkSchema(11), tracks)
 })
 
-const explainableBaselineArchive = process.env.MUSIC_PLAYER_041_ZIP
+const explainableBaselineArchive = process.env.MUSTPLAY_041_ZIP
 test('restores 0.4.1 feedback and playback with explanations for fresh Wave entries', { skip: !explainableBaselineArchive, timeout: 90_000 }, async (t) => {
   const { root, folder, profile, app, flac } = await prepareRelease(t)
   unpack(explainableBaselineArchive, root)

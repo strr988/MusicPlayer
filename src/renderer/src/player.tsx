@@ -1,9 +1,10 @@
 import { repeatModes } from '../../shared/contracts'
 import type { RepeatMode } from '../../shared/contracts'
 import { Artwork } from './artwork'
-import { Icon, IconButton } from './icons'
+import { Icon, IconButton, LikeButton } from './icons'
 import type { usePlayback } from './playback'
 import { Timeline } from './timeline'
+import { SoundMenu } from './sound-menu'
 import type { RefObject } from 'react'
 
 const repeatLabels: Record<RepeatMode, string> = {
@@ -32,7 +33,7 @@ export function Player({ playback, hasTracks, liked, likeDisabled, toggleLike, q
     : loading ? 'Открываем трек…' : playlistName ? 'Плейлист «' + playlistName + '»' : ''
 
   return <footer className="player" aria-label="Воспроизведение">
-    <audio {...playback.audioProps} preload="metadata" />
+    <audio {...playback.audioProps} preload="metadata" crossOrigin="anonymous" />
     <div className="now-playing">
       {track ? <button ref={fullPlayerButton} className="player-cover-button" type="button" aria-label="На весь экран"
         title="На весь экран" aria-haspopup="dialog" onClick={openFullPlayer}>
@@ -44,7 +45,7 @@ export function Player({ playback, hasTracks, liked, likeDisabled, toggleLike, q
         <p className="muted truncate" title={track?.artist ?? undefined}>{track?.artist || (track ? 'Неизвестный исполнитель' : 'Выберите трек в библиотеке')}</p>
         {context && <p className="player-context truncate" role="status" title={context}>{context}</p>}
       </div>
-      <IconButton icon="heart" label="Лайк текущему треку" aria-pressed={liked} disabled={!track || likeDisabled}
+      <LikeButton label="Лайк текущему треку" aria-pressed={liked} disabled={!track || likeDisabled}
         onClick={toggleLike} />
     </div>
     <div className="transport">
@@ -53,6 +54,8 @@ export function Player({ playback, hasTracks, liked, likeDisabled, toggleLike, q
         trackDuration={track?.durationSeconds ?? null} restoredPosition={playback.restoredPosition} seek={playback.seek} />
     </div>
     <div className="player-tools">
+      <SoundMenu sound={playback.sound} saving={playback.savingSoundEffect} error={playback.soundEffectError}
+        changeEffect={playback.changeSoundEffect} changeReverb={playback.changeReverb} />
       <IconButton ref={textMusicButton} icon="lyrics" label="Текстомузыка" aria-pressed={textMusicOpen}
         aria-controls="song-lyrics" disabled={!track && !textMusicOpen} onClick={toggleTextMusic} />
       <div className="volume">

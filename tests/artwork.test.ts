@@ -12,7 +12,7 @@ let library: Library
 let artwork: Artwork
 
 beforeEach(async () => {
-  folder = await mkdtemp(join(tmpdir(), 'music-player-artwork-'))
+  folder = await mkdtemp(join(tmpdir(), 'mustplay-artwork-'))
   library = new Library(':memory:')
   artwork = new Artwork(library)
 })
@@ -94,5 +94,5 @@ it('keeps playable tracks with missing, corrupt, unsupported and oversized artwo
     expect(await library.getAvailableSource(library.getSourceId(track.id)!)).toBeDefined()
     expect((await serve(track.artworkUrl!)).status).toBe(404)
   }
-  expect((await serve('music-player://app/artwork/00000000-0000-0000-0000-000000000000')).status).toBe(404)
+  expect((await serve('mustplay://app/artwork/00000000-0000-0000-0000-000000000000')).status).toBe(404)
 })

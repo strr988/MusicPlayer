@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { defaultWavePulse, maxWavePulse, shortcutActions } from '../../shared/contracts'
-import type { ShortcutAction, ShortcutBinding, ShortcutBindings } from '../../shared/contracts'
+import { defaultWavePulse, interfaceScales, maxWavePulse, shortcutActions, soundEffectRates } from '../../shared/contracts'
+import type { InterfaceScale, ShortcutAction, ShortcutBinding, ShortcutBindings } from '../../shared/contracts'
+import type { useDiscoMode } from './disco'
 import { formatTime } from './playback'
 import type { usePlayback } from './playback'
 import { sleepMaxMinutes, sleepPresets, timedSleep } from './sleep-timer'
@@ -19,17 +20,19 @@ const shortcutErrors = {
   unavailable: 'Windows не зарегистрировала сочетание. Возможно, оно занято.',
 }
 
-export function PlayerSettings({ playback, wavePulse, changeWavePulse, openMini }: {
+export function PlayerSettings({ playback, wavePulse, changeWavePulse, openMini, disco }: {
   playback: ReturnType<typeof usePlayback>
   wavePulse: number | null
   changeWavePulse: (value: number) => void
   openMini: () => void
+  disco: ReturnType<typeof useDiscoMode>
 }) {
   return <section aria-label="Настройки плеера">
     <header className="section-heading">
       <h1>Настройки</h1>
     </header>
     <div className="player-settings">
+      <InterfaceSettings disco={disco} />
       <section className="settings-card">
         <h2>Моя волна</h2>
         <label className="pulse-setting">
@@ -48,6 +51,54 @@ export function PlayerSettings({ playback, wavePulse, changeWavePulse, openMini 
       </section>
       <ShortcutSettings />
     </div>
+  </section>
+}
+
+function InterfaceSettings({ disco }: { disco: ReturnType<typeof useDiscoMode> }) {
+  const [scale, setScale] = useState<InterfaceScale>()
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  useEffect(() => {
+    let active = true
+    void window.mustplay.getInterfaceScale().then(value => {
+      if (active) setScale(value)
+    }).catch(() => {
+      if (active) setError('Не удалось загрузить масштаб.')
+    })
+    return () => { active = false }
+  }, [])
+
+  async function changeScale(value: InterfaceScale) {
+    setSaving(true)
+    setError('')
+    try {
+      await window.mustplay.setInterfaceScale(value)
+      setScale(value)
+    } catch {
+      setError('Не удалось сохранить масштаб.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return <section className="settings-card">
+    <h2>Интерфейс</h2>
+    <label className="settings-option">
+      <span>Масштаб интерфейса</span>
+      <select className="settings-input player-select" aria-label="Масштаб интерфейса" value={scale ?? ''} disabled={scale === undefined || saving}
+        onChange={event => void changeScale(Number(event.currentTarget.value) as InterfaceScale)}>
+        {scale === undefined && <option value="">—</option>}
+        {interfaceScales.map(value => <option key={value} value={value}>{value}%</option>)}
+      </select>
+    </label>
+    {error && <p role="alert">{error}</p>}
+    <label className="settings-option disco-setting">
+      <span>Диско-режим</span>
+      <input type="checkbox" role="switch" checked={disco.enabled ?? false} disabled={disco.enabled === null || disco.saving}
+        onChange={event => void disco.change(event.currentTarget.checked)} />
+    </label>
+    <p className="muted">Мягкие волны пульсируют под басовые удары.</p>
+    {disco.error && <p role="alert">{disco.error}</p>}
   </section>
 }
 
@@ -73,8 +124,9 @@ function SleepSettings({ playback }: { playback: ReturnType<typeof usePlayback> 
     setNow(time)
     changeSleep(timedSleep(duration, time))
   }
+  const rate = soundEffectRates[playback.sound?.effect ?? 'original']
   const remaining = sleep?.kind === 'deadline' ? Math.ceil(Math.max(0, sleep.at - now) / 1000)
-    : sleep?.kind === 'track' && playback.duration !== null ? Math.ceil(Math.max(0, playback.duration - position)) : null
+    : sleep?.kind === 'track' && playback.duration !== null ? Math.ceil(Math.max(0, playback.duration - position) / rate) : null
   const customMinutes = Number(minutes)
 
   return <section className="settings-card">
@@ -110,7 +162,7 @@ function ShortcutSettings() {
   const [failed, setFailed] = useState(false)
   useEffect(() => {
     let active = true
-    void window.musicPlayer.getShortcuts().then(value => {
+    void window.mustplay.getShortcuts().then(value => {
       if (active) setBindings(value)
     }).catch(() => { if (active) setFailed(true) })
     return () => { active = false }
@@ -142,7 +194,7 @@ function ShortcutRow({ action, binding, onSave }: {
     if (!capture.current) return
     capture.current = false
     setRecording(false)
-    void window.musicPlayer.setShortcutCapture(false).catch(() => {})
+    void window.mustplay.setShortcutCapture(false).catch(() => {})
   }
 
   useEffect(() => {
@@ -153,7 +205,7 @@ function ShortcutRow({ action, binding, onSave }: {
   useEffect(() => () => {
     if (capture.current) {
       capture.current = false
-      void window.musicPlayer.setShortcutCapture(false).catch(() => {})
+      void window.mustplay.setShortcutCapture(false).catch(() => {})
     }
   }, [])
 
@@ -162,7 +214,7 @@ function ShortcutRow({ action, binding, onSave }: {
     capture.current = true
     setError('')
     try {
-      await window.musicPlayer.setShortcutCapture(true)
+      await window.mustplay.setShortcutCapture(true)
       if (capture.current) setRecording(true)
     } catch {
       if (capture.current) {
@@ -176,7 +228,7 @@ function ShortcutRow({ action, binding, onSave }: {
     setSaving(true)
     setError('')
     try {
-      const result = await window.musicPlayer.setShortcut(action, accelerator)
+      const result = await window.mustplay.setShortcut(action, accelerator)
       if (result.status === 'saved') {
         setDraft(result.binding.accelerator ?? '')
         onSave(result.binding)

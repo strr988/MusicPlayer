@@ -2,9 +2,10 @@ import { useEffect, useEffectEvent, useState } from 'react'
 import type { PlaybackCommand } from '../../shared/contracts'
 import type { usePlayback } from './playback'
 
-export function useDesktopPlayback(playback: ReturnType<typeof usePlayback>, hasTracks: boolean): void {
+export function useDesktopPlayback(playback: ReturnType<typeof usePlayback>, hasTracks: boolean): boolean {
   const [miniVisible, setMiniVisible] = useState(false)
-  const { track, currentEntryId, playing, ready, loading, duration, restoredPosition, volume, canGoBack, canGoNext } = playback
+  const { track, currentEntryId, playing, ready, loading, duration, restoredPosition, volume, canGoBack, canGoNext,
+    sound, savingSoundEffect, soundEffectError } = playback
   const audio = playback.audioProps.ref
 
   const dispatch = useEffectEvent((command: PlaybackCommand) => {
@@ -16,14 +17,16 @@ export function useDesktopPlayback(playback: ReturnType<typeof usePlayback>, has
       case 'volumeDown': playback.adjustVolume(-0.05); break
       case 'mute': playback.toggleMute(); break
       case 'volume': playback.setVolumeLevel(command.level); break
+      case 'sound-effect': playback.changeSoundEffect(command.effect); break
+      case 'reverb': playback.changeReverb(command.effect, command.enabled); break
       case 'seek':
         if (currentEntryId === command.entryId && !loading) playback.seek(command.seconds)
         break
     }
   })
   useEffect(() => {
-    const unsubscribeCommand = window.musicPlayer.onPlaybackCommand(command => dispatch(command))
-    const unsubscribeVisibility = window.musicPlayer.onMiniVisibility(setMiniVisible)
+    const unsubscribeCommand = window.mustplay.onPlaybackCommand(command => dispatch(command))
+    const unsubscribeVisibility = window.mustplay.onMiniVisibility(setMiniVisible)
     return () => {
       unsubscribeCommand()
       unsubscribeVisibility()
@@ -31,18 +34,20 @@ export function useDesktopPlayback(playback: ReturnType<typeof usePlayback>, has
   }, [])
 
   const publish = useEffectEvent(() => {
-    void window.musicPlayer.publishMiniState({
+    void window.mustplay.publishMiniState({
       track: track ? { title: track.title.slice(0, 1024), artist: track.artist?.slice(0, 1024) ?? null, artworkUrl: track.artworkUrl } : null,
       entryId: currentEntryId,
       position: restoredPosition ?? audio.current?.currentTime ?? 0,
       duration: duration ?? track?.durationSeconds ?? null,
       seekable: duration !== null && !loading,
       playing, volume, canGoBack, canGoNext: ready && canGoNext, canPlay: hasTracks && ready && !loading,
+      sound, savingSound: savingSoundEffect, soundError: soundEffectError,
     }).catch(error => console.error('Could not publish mini player state', error))
   })
   useEffect(() => {
     if (miniVisible) publish()
-  }, [miniVisible, hasTracks, track, currentEntryId, playing, ready, loading, duration, restoredPosition, volume, canGoBack, canGoNext])
+  }, [miniVisible, hasTracks, track, currentEntryId, playing, ready, loading, duration, restoredPosition, volume, canGoBack, canGoNext,
+    sound, savingSoundEffect, soundEffectError])
   useEffect(() => {
     const element = audio.current
     if (!miniVisible || !element) return
@@ -51,4 +56,5 @@ export function useDesktopPlayback(playback: ReturnType<typeof usePlayback>, has
     for (const event of events) element.addEventListener(event, update)
     return () => { for (const event of events) element.removeEventListener(event, update) }
   }, [audio, miniVisible])
+  return miniVisible
 }

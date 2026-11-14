@@ -12,7 +12,7 @@ let folder: string
 let library: Library
 
 beforeEach(async () => {
-  temp = await mkdtemp(join(tmpdir(), 'music-player-'))
+  temp = await mkdtemp(join(tmpdir(), 'mustplay-'))
   folder = join(temp, 'Музыка')
   await mkdir(folder)
   library = new Library(':memory:')
@@ -81,7 +81,7 @@ describe('local audio', () => {
     await copyFile(mp3, path)
     const { tracks } = await library.importFolder(folder)
     const source = library.getSourceId(tracks[0].id)!
-    const url = `music-player://app/audio/${source}`
+    const url = `mustplay://app/audio/${source}`
     const request = new Request(url, { headers: { Range: 'bytes=15-30' } })
     const bytes = await readFile(mp3)
 

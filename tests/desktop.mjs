@@ -12,7 +12,7 @@ import { catalogSize, fixtureMetadata } from './fixtures/interface-catalog.mjs'
 import { prepareSession } from '../scripts/pilot-session.mjs'
 
 async function prepareElectron(t, { withArtwork = false, withCatalog = false } = {}) {
-  const directory = await mkdtemp(join(tmpdir(), 'music-player-desktop-'))
+  const directory = await mkdtemp(join(tmpdir(), 'mustplay-desktop-'))
   t.after(() => rm(directory, { recursive: true, force: true, maxRetries: 5 }))
   const fixtures = join(directory, 'audio')
   await mkdir(fixtures)
@@ -114,4 +114,10 @@ test('offline blind pilot plays local audio and exports only explicitly submitte
   await promisify(execFile)(executable, [
     entry, join(output, 'participant', 'listen.html'), join(fixtures, 'ratings.json'), join(fixtures, 'profile'),
   ], { timeout: 35_000 })
+})
+
+test('interface scale and audio effects apply live and restore across restarts', { timeout: 75_000 }, async t => {
+  const { run } = await prepareElectron(t)
+  await run('scale-effects')
+  await run('scale-effects-restart')
 })

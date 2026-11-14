@@ -1,6 +1,8 @@
 import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
-import { queueEntryLimit } from '../../shared/contracts'
-import type { LibraryTrack, PlaybackEventInput, PlaybackQueue, Playlist, QueueEntry, QueueSource, RepeatMode, VolumePreference, WaveDecision, WaveRecommendations } from '../../shared/contracts'
+import { defaultSoundSettings, queueEntryLimit, soundEffectRates } from '../../shared/contracts'
+import type { LibraryTrack, PlaybackEventInput, PlaybackQueue, Playlist, QueueEntry, QueueSource, RepeatMode, SoundEffect, SoundSettings, VolumePreference, WaveDecision, WaveRecommendations } from '../../shared/contracts'
+import { createAudioEffects } from './audio-effects'
+import type { AudioEffects } from './audio-effects'
 import { ListeningSession } from './listening-session'
 import { emptyQueue, enqueue, goBack, movePending, previousEntry, removePending, repeatQueue, setShuffle, startQueue, takePending } from './playback-queue'
 import { fadedVolume, sleepAtTrackEnd, sleepStatus } from './sleep-timer'
@@ -10,6 +12,13 @@ export function formatTime(seconds: number | null): string {
   if (seconds === null) return '—'
   const whole = Math.floor(seconds)
   return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`
+}
+
+function applySoundEffect(element: HTMLAudioElement, effect: SoundEffect): void {
+  const rate = soundEffectRates[effect]
+  element.preservesPitch = effect === 'original'
+  element.defaultPlaybackRate = rate
+  element.playbackRate = rate
 }
 
 const newEntry = (trackId: string, kind: QueueEntry['kind']): QueueEntry => ({ id: crypto.randomUUID(), trackId, kind })
@@ -30,6 +39,12 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
   const gain = useRef(1)
   const [volumeError, setVolumeError] = useState('')
   const volumeWrite = useRef(0)
+  const [sound, setSound] = useState<SoundSettings | null>(null)
+  const [savingSoundEffect, setSavingSoundEffect] = useState(false)
+  const savingSound = useRef(false)
+  const [soundEffectError, setSoundEffectError] = useState('')
+  const audioEffects = useRef<AudioEffects>(null)
+  useEffect(() => () => { void audioEffects.current?.context.close().catch(() => {}) }, [])
   useEffect(() => {
     let active = true
     const apply = (preference: VolumePreference) => {
@@ -39,10 +54,25 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
       volumeRef.current = preference
       setVolume(preference)
     }
-    void window.musicPlayer.getVolume().then(apply).catch(() => {
+    void window.mustplay.getVolume().then(apply).catch(() => {
       if (!active) return
       setVolumeError('Не удалось загрузить громкость.')
       apply({ level: 1, muted: false })
+    })
+    return () => { active = false }
+  }, [])
+
+  useEffect(() => {
+    let active = true
+    const apply = (settings: SoundSettings) => {
+      if (!active || !audio.current) return
+      applySoundEffect(audio.current, settings.effect)
+      setSound(settings)
+    }
+    void window.mustplay.getSoundEffect().then(apply).catch(() => {
+      if (!active) return
+      setSoundEffectError('Не удалось загрузить звуковой эффект.')
+      apply(defaultSoundSettings)
     })
     return () => { active = false }
   }, [])
@@ -52,11 +82,12 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
     if (!element) return
     element.volume = fadedVolume(preference.level, gain.current)
     element.muted = preference.muted
+    audioEffects.current?.setMuted(preference.muted || element.volume === 0)
     volumeRef.current = preference
     setVolume(preference)
     setVolumeError('')
     const revision = ++volumeWrite.current
-    void window.musicPlayer.setVolume(preference.level, preference.muted).catch(() => {
+    void window.mustplay.setVolume(preference.level, preference.muted).catch(() => {
       if (revision === volumeWrite.current) setVolumeError('Не удалось сохранить громкость.')
     })
   }
@@ -66,7 +97,7 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
   const writes = useRef(Promise.resolve())
   const [feedbackError, setFeedbackError] = useState('')
   function record(event: PlaybackEventInput): void {
-    writes.current = writes.current.then(() => window.musicPlayer.recordPlaybackEvent(event))
+    writes.current = writes.current.then(() => window.mustplay.recordPlaybackEvent(event))
       .catch(() => setFeedbackError('Не удалось сохранить историю воспроизведения.'))
   }
 
@@ -95,10 +126,44 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
   const current = queue.current ? entriesById.get(queue.current) : undefined
   const track = current && tracksById.get(current.trackId)
   const mode = queue.source.type
+  const ready = sessionReady && !!volume && sound !== null
+
+  async function saveSound(next: SoundSettings, persistSetting: () => Promise<void>): Promise<void> {
+    if (savingSound.current) return
+    savingSound.current = true
+    setSavingSoundEffect(true)
+    setSoundEffectError('')
+    try {
+      await persistSetting()
+      const element = audio.current
+      if (!element) return
+      session.current?.setRate(soundEffectRates[next.effect])
+      applySoundEffect(element, next.effect)
+      audioEffects.current?.setReverb(next.reverb[next.effect])
+      if (sleepRef.current) updateSleep()
+      setSound(next)
+    } catch {
+      setSoundEffectError('Не удалось сохранить звуковой эффект.')
+    } finally {
+      savingSound.current = false
+      setSavingSoundEffect(false)
+    }
+  }
+
+  function changeSoundEffect(effect: SoundEffect): void {
+    if (!sound || effect === sound.effect) return
+    void saveSound({ ...sound, effect }, () => window.mustplay.setSoundEffect(effect))
+  }
+
+  function changeReverb(effect: SoundEffect, enabled: boolean): void {
+    if (!sound || sound.reverb[effect] === enabled) return
+    void saveSound({ ...sound, reverb: { ...sound.reverb, [effect]: enabled } },
+      () => window.mustplay.setReverb(effect, enabled))
+  }
 
   useEffect(() => {
     let active = true
-    void window.musicPlayer.getPlaybackSession().then(saved => {
+    void window.mustplay.getPlaybackSession().then(saved => {
       if (!active || !saved) return
       queueRef.current = saved.queue
       position.current = saved.position
@@ -114,7 +179,7 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
   function persist(): void {
     const revision = ++saveRevision.current
     lastCheckpoint.current = performance.now()
-    void window.musicPlayer.setPlaybackSession({ queue: queueRef.current, position: position.current })
+    void window.mustplay.setPlaybackSession({ queue: queueRef.current, position: position.current })
       .then(() => { if (revision === saveRevision.current) setStorageError('') })
       .catch(() => { if (revision === saveRevision.current) setStorageError('Не удалось сохранить очередь воспроизведения.') })
   }
@@ -136,7 +201,10 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
   function applyGain(next: number): void {
     if (gain.current === next) return
     gain.current = next
-    if (audio.current && volumeRef.current) audio.current.volume = fadedVolume(volumeRef.current.level, next)
+    if (audio.current && volumeRef.current) {
+      audio.current.volume = fadedVolume(volumeRef.current.level, next)
+      audioEffects.current?.setMuted(audio.current.muted || audio.current.volume === 0)
+    }
   }
 
   function changeSleep(timer: SleepTimer | null): void {
@@ -156,7 +224,7 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
   function updateSleep(): void {
     const element = audio.current
     const remaining = element && Number.isFinite(element.duration)
-      ? Math.max(0, element.duration - element.currentTime) * 1000 : null
+      ? Math.max(0, element.duration - element.currentTime) / element.playbackRate * 1000 : null
     const status = sleepStatus(sleepRef.current, Date.now(), queueRef.current.current, remaining)
     applyGain(status.gain)
     if (status.result === 'stop') stopForSleep()
@@ -179,6 +247,14 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
 
   async function play(element: HTMLAudioElement, token: number): Promise<boolean> {
     try {
+      audioEffects.current ??= createAudioEffects(element)
+      audioEffects.current.setMuted(element.muted || element.volume === 0)
+      if (sound) audioEffects.current.setReverb(sound.reverb[sound.effect])
+      if (audioEffects.current.context.state !== 'running') void audioEffects.current.context.resume().catch(() => {})
+    } catch {
+      setSoundEffectError('Не удалось подключить обработку звука.')
+    }
+    try {
       await element.play()
       return token === request.current
     } catch {
@@ -194,6 +270,7 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
     session.current?.finish('manual', element.duration)
     session.current = null
     element.pause()
+    audioEffects.current?.resetReverb()
     element.removeAttribute('src')
     element.load()
     setPlaying(false)
@@ -206,9 +283,12 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
   }
 
   async function loadTrack(element: HTMLAudioElement, entry: QueueEntry, token: number): Promise<boolean> {
-    if (tracksById.has(entry.trackId)) session.current = new ListeningSession(entry.trackId, crypto.randomUUID(), record)
+    if (tracksById.has(entry.trackId)) {
+      session.current = new ListeningSession(entry.trackId, crypto.randomUUID(), record)
+      session.current.setRate(element.playbackRate)
+    }
     try {
-      const source = await window.musicPlayer.getPlayableSource(entry.trackId)
+      const source = await window.mustplay.getPlayableSource(entry.trackId)
       if (token !== request.current) return false
       if (!source) {
         markUnavailable(entry.trackId)
@@ -226,7 +306,7 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
 
   async function navigate(direction: Transition, options: { id?: string; fresh?: PlaybackQueue; allowSame?: boolean; restore?: boolean } = {}): Promise<void> {
     const element = audio.current
-    if (!element || !sessionReady || (busy.current && !options.fresh)) return
+    if (!element || !ready || (busy.current && !options.fresh)) return
     const previous = queueRef.current
     const previousTrack = previous.entries.find(entry => entry.id === previous.current)?.trackId
     let remember = played.current
@@ -263,7 +343,7 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
             // The terminal event must reach Main before it takes a recommendation snapshot.
             await writes.current
             if (token !== request.current) return
-            const { decisions, ...calculation } = await window.musicPlayer.getWaveRecommendations()
+            const { decisions, ...calculation } = await window.mustplay.getWaveRecommendations()
             if (token !== request.current) return
             state = queueRef.current
             id = state.pending[0]
@@ -358,7 +438,7 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
 
   function resume(): void {
     const element = audio.current
-    if (!element || !sessionReady || !volume || busy.current || !element.paused) return
+    if (!element || !ready || busy.current || !element.paused) return
     sleepPauseRequested.current = false
     const state = queueRef.current
     if (element.hasAttribute('src') && !element.error && !element.ended) {
@@ -400,8 +480,9 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
 
   return {
     queue, entriesById, tracksById, track, mode, playlistName: queue.source.type === 'playlist' ? queue.source.name : undefined,
-    playing, loading, ready: sessionReady && !!volume, error: error || feedbackError || volumeError || storageError,
+    playing, loading, ready, error: error || feedbackError || volumeError || storageError,
     waveNotice, duration, restoredPosition, volume, changeVolume, canGoBack, canGoNext,
+    sound, savingSoundEffect, soundEffectError, changeSoundEffect, changeReverb, audioEffects,
     sleep, changeSleep, currentEntryId: queue.current,
     adjustVolume: (offset: number) => {
       const current = volumeRef.current
@@ -454,7 +535,11 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
           setPlaying(true)
         }
       },
-      onPause: () => { session.current?.suspend(); setPlaying(false) },
+      onPause: () => {
+        session.current?.suspend()
+        if (!audio.current?.ended) audioEffects.current?.resetReverb()
+        setPlaying(false)
+      },
       onWaiting: () => session.current?.suspend(),
       onSeeking: () => session.current?.suspend(),
       onSeeked: () => {

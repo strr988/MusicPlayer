@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
-import { defaultWavePulse, maxWavePulse, playerOrigin, playlistNameLimit } from '../shared/contracts'
+import { defaultInterfaceScale, defaultSoundSettings, defaultWavePulse, interfaceScales, maxWavePulse, playerOrigin, playlistNameLimit, soundEffects } from '../shared/contracts'
 import type { Track, LibraryTrack, ListeningData, ListeningDataReader, PlaybackEventInput, PlaybackSession, Playlist, TrackPreference, VolumePreference, WaveMode } from '../shared/contracts'
 import type { FileIdentity } from './local-file'
 import { validatePlaybackSession } from './playback-session'
 import { removeLegacyDemo } from './legacy-demo'
-import type { ShortcutAction } from '../shared/contracts'
+import type { InterfaceScale, ShortcutAction, SoundEffect, SoundSettings, Theme } from '../shared/contracts'
 
 const migrations = [
   `CREATE TABLE tracks (
@@ -90,6 +90,20 @@ const migrations = [
     wave_pulse INTEGER NOT NULL CHECK (wave_pulse BETWEEN 0 AND ${maxWavePulse})
   ) STRICT;
   INSERT INTO appearance_settings VALUES (1, ${defaultWavePulse});`,
+  `ALTER TABLE appearance_settings ADD COLUMN theme TEXT NOT NULL DEFAULT 'dark'
+    CHECK (theme IN ('dark', 'light'));`,
+  `ALTER TABLE appearance_settings ADD COLUMN interface_scale INTEGER NOT NULL DEFAULT ${defaultInterfaceScale}
+    CHECK (interface_scale IN (${interfaceScales.join(', ')}));
+  CREATE TABLE playback_effect (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    effect TEXT NOT NULL CHECK (effect IN (${soundEffects.map(effect => `'${effect}'`).join(', ')}))
+  ) STRICT;
+  INSERT INTO playback_effect VALUES (1, 'original');`,
+  `ALTER TABLE appearance_settings ADD COLUMN disco INTEGER NOT NULL DEFAULT 0 CHECK (disco IN (0, 1));
+  CREATE TABLE preset_reverb (
+    effect TEXT PRIMARY KEY CHECK (effect IN (${soundEffects.map(effect => `'${effect}'`).join(', ')})),
+    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1))
+  ) STRICT;`,
 ]
 
 export interface LocalSource {
@@ -237,6 +251,48 @@ export class LibraryStore implements ListeningDataReader {
 
   setWavePulse(intensity: number): void {
     this.db.prepare('UPDATE appearance_settings SET wave_pulse = ? WHERE id = 1').run(intensity)
+  }
+
+  getTheme(): Theme {
+    return this.db.prepare('SELECT theme FROM appearance_settings WHERE id = 1').get()!.theme as Theme
+  }
+
+  setTheme(theme: Theme): void {
+    this.db.prepare('UPDATE appearance_settings SET theme = ? WHERE id = 1').run(theme)
+  }
+
+  getInterfaceScale(): InterfaceScale {
+    return this.db.prepare('SELECT interface_scale FROM appearance_settings WHERE id = 1').get()!.interface_scale as InterfaceScale
+  }
+
+  setInterfaceScale(scale: InterfaceScale): void {
+    this.db.prepare('UPDATE appearance_settings SET interface_scale = ? WHERE id = 1').run(scale)
+  }
+
+  getSoundEffect(): SoundSettings {
+    const { effect } = this.db.prepare('SELECT effect FROM playback_effect WHERE id = 1').get()!
+    const reverb = { ...defaultSoundSettings.reverb }
+    for (const row of this.db.prepare('SELECT effect, enabled FROM preset_reverb').all()) {
+      reverb[row.effect as SoundEffect] = row.enabled === 1
+    }
+    return { effect: effect as SoundEffect, reverb }
+  }
+
+  setSoundEffect(effect: SoundEffect): void {
+    this.db.prepare('UPDATE playback_effect SET effect = ? WHERE id = 1').run(effect)
+  }
+
+  setReverb(effect: SoundEffect, enabled: boolean): void {
+    this.db.prepare('INSERT INTO preset_reverb VALUES (?, ?) ON CONFLICT(effect) DO UPDATE SET enabled = excluded.enabled')
+      .run(effect, Number(enabled))
+  }
+
+  getDiscoMode(): boolean {
+    return this.db.prepare('SELECT disco FROM appearance_settings WHERE id = 1').get()?.disco === 1
+  }
+
+  setDiscoMode(enabled: boolean): void {
+    this.db.prepare('UPDATE appearance_settings SET disco = ? WHERE id = 1').run(Number(enabled))
   }
 
   setMiniPinned(pinned: boolean): void {

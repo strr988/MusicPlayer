@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { channels } from '../shared/contracts'
 import type { IpcRendererEvent } from 'electron'
-import type { MiniPlayerApi, MusicPlayerApi } from '../shared/contracts'
+import type { MiniPlayerApi, MustplayApi } from '../shared/contracts'
 
 function subscribe<T>(channel: string, callback: (value: T) => void): () => void {
   const listener = (_event: IpcRendererEvent, value: T) => callback(value)
@@ -9,13 +9,22 @@ function subscribe<T>(channel: string, callback: (value: T) => void): () => void
   return () => { ipcRenderer.removeListener(channel, listener) }
 }
 
-const api: MusicPlayerApi = {
+const api: MustplayApi = {
   getWaveQueue: () => ipcRenderer.invoke(channels.getWaveQueue),
   getWaveRecommendations: () => ipcRenderer.invoke(channels.getWaveRecommendations),
   getWaveMode: () => ipcRenderer.invoke(channels.getWaveMode),
   setWaveMode: (mode) => ipcRenderer.invoke(channels.setWaveMode, mode),
   getWavePulse: () => ipcRenderer.invoke(channels.getWavePulse),
   setWavePulse: (intensity) => ipcRenderer.invoke(channels.setWavePulse, intensity),
+  setTheme: (theme) => ipcRenderer.invoke(channels.setTheme, theme),
+  getInterfaceScale: () => ipcRenderer.invoke(channels.getInterfaceScale),
+  setInterfaceScale: (scale) => ipcRenderer.invoke(channels.setInterfaceScale, scale),
+  getSoundEffect: () => ipcRenderer.invoke(channels.getSoundEffect),
+  setSoundEffect: (effect) => ipcRenderer.invoke(channels.setSoundEffect, effect),
+  setReverb: (effect, enabled) => ipcRenderer.invoke(channels.setReverb, effect, enabled),
+  getDiscoMode: () => ipcRenderer.invoke(channels.getDiscoMode),
+  setDiscoMode: (enabled) => ipcRenderer.invoke(channels.setDiscoMode, enabled),
+  publishDiscoBeat: (strength) => ipcRenderer.invoke(channels.publishDiscoBeat, strength),
   getPlaylists: () => ipcRenderer.invoke(channels.getPlaylists),
   createPlaylist: (name) => ipcRenderer.invoke(channels.createPlaylist, name),
   renamePlaylist: (id, name) => ipcRenderer.invoke(channels.renamePlaylist, id, name),
@@ -47,10 +56,11 @@ const api: MusicPlayerApi = {
 const mini: MiniPlayerApi = {
   getState: () => ipcRenderer.invoke(channels.getMiniState),
   onState: (callback) => subscribe(channels.miniState, callback),
+  onDiscoBeat: (callback) => subscribe(channels.discoBeat, callback),
   control: (command) => ipcRenderer.invoke(channels.controlMiniPlayback, command),
   setPinned: (pinned) => ipcRenderer.invoke(channels.setMiniPinned, pinned),
   showMain: () => ipcRenderer.invoke(channels.showMainPlayer),
 }
 
-if (process.argv.includes('--music-player-mini')) contextBridge.exposeInMainWorld('miniPlayer', mini)
-else contextBridge.exposeInMainWorld('musicPlayer', api)
+if (process.argv.includes('--mustplay-mini')) contextBridge.exposeInMainWorld('miniPlayer', mini)
+else contextBridge.exposeInMainWorld('mustplay', api)

@@ -5,14 +5,14 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, beforeEach, expect, it } from 'vitest'
 import { LibraryStore } from '../src/main/library-store'
-import { localLibraryFile, resolveLibraryPath } from '../src/main/library-profile'
+import { localLibraryFile, resolveLibraryPath, resolveProfileDirectory } from '../src/main/library-profile'
 
 let profile: string
 let original: string
 let store: LibraryStore | undefined
 
 beforeEach(async () => {
-  profile = await mkdtemp(join(tmpdir(), 'music-player-profile-'))
+  profile = await mkdtemp(join(tmpdir(), 'mustplay-profile-'))
   original = join(profile, 'library.sqlite3')
 })
 
@@ -22,6 +22,66 @@ afterEach(async () => {
   await rm(profile, { recursive: true, force: true })
 })
 
+it('reuses the legacy library profile until the renamed profile has a library', async () => {
+  const current = join(profile, 'mustplay')
+  await mkdir(current)
+  expect(resolveProfileDirectory(current, profile)).toBe(current)
+  new LibraryStore(original).close()
+  expect(resolveProfileDirectory(current, profile)).toBe(profile)
+  new LibraryStore(join(current, localLibraryFile)).close()
+  expect(resolveProfileDirectory(current, profile)).toBe(current)
+})
+
+it('upgrades schema 8 and persists the theme alongside existing appearance preferences', async () => {
+  const previous = new LibraryStore(original)
+  previous.setWavePulse(175)
+  previous.close()
+  {
+    using db = new DatabaseSync(original)
+    db.exec(`DROP TABLE preset_reverb; ALTER TABLE appearance_settings DROP COLUMN disco;
+      ALTER TABLE appearance_settings DROP COLUMN interface_scale;
+      ALTER TABLE appearance_settings DROP COLUMN theme; DROP TABLE playback_effect; PRAGMA user_version = 8`)
+  }
+  const upgraded = new LibraryStore(original)
+  try {
+    expect(upgraded.getTheme()).toBe('dark')
+    expect(upgraded.getWavePulse()).toBe(175)
+    upgraded.setTheme('light')
+  } finally {
+    upgraded.close()
+  }
+  store = new LibraryStore(original)
+  expect(store.getTheme()).toBe('light')
+  expect((await readdir(profile)).filter(file => /^library\.sqlite3\.v8-.*\.backup$/.test(file))).toHaveLength(1)
+})
+
+it('upgrades a 0.7.0 profile and persists its zoom and sound effect beside the theme', () => {
+  const previous = new LibraryStore(original)
+  previous.setTheme('light')
+  previous.close()
+  {
+    using db = new DatabaseSync(original)
+    db.exec(`DROP TABLE preset_reverb; ALTER TABLE appearance_settings DROP COLUMN disco;
+      ALTER TABLE appearance_settings DROP COLUMN interface_scale; DROP TABLE playback_effect; PRAGMA user_version = 9`)
+  }
+  const upgraded = new LibraryStore(original)
+  try {
+    expect(upgraded.getTheme()).toBe('light')
+    expect(upgraded.getInterfaceScale()).toBe(100)
+    expect(upgraded.getSoundEffect()).toEqual({ effect: 'original', reverb: { original: false, 'speed-up': false, slowed: false } })
+    upgraded.setInterfaceScale(125)
+    upgraded.setSoundEffect('slowed')
+    upgraded.setReverb('slowed', true)
+    upgraded.setReverb('original', true)
+    upgraded.setDiscoMode(true)
+  } finally {
+    upgraded.close()
+  }
+  store = new LibraryStore(original)
+  expect(store.getInterfaceScale()).toBe(125)
+  expect(store.getSoundEffect()).toEqual({ effect: 'slowed', reverb: { original: true, 'speed-up': false, slowed: true } })
+  expect(store.getDiscoMode()).toBe(true)
+})
 it.each([6, 7])('copies only local library data from an experimental schema %i', async version => {
   new LibraryStore(original).close()
   const localTrack = randomUUID()
@@ -40,7 +100,7 @@ it.each([6, 7])('copies only local library data from an experimental schema %i',
   }
   {
     using db = new DatabaseSync(original)
-    db.exec(`DROP TABLE appearance_settings; DROP TABLE mini_player; DROP TABLE global_shortcuts;
+    db.exec(`DROP TABLE preset_reverb; DROP TABLE playback_effect; DROP TABLE appearance_settings; DROP TABLE mini_player; DROP TABLE global_shortcuts;
       CREATE TABLE stream_tracks (id TEXT PRIMARY KEY) STRICT;
       CREATE TABLE stream_settings (id INTEGER PRIMARY KEY) STRICT;
       PRAGMA user_version = ${version}`)

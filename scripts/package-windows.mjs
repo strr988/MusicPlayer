@@ -34,15 +34,20 @@ await mkdir(release, { recursive: true })
 assert.ok(!(await lstat(release)).isSymbolicLink(), 'Expected a local release directory')
 const releasePath = await realpath(release)
 const staging = await mkdtemp(join(releasePath, '.windows-'))
-const appFolder = `Music Player ${version}`
-const zipName = `MusicPlayer-${version}-win-x64.zip`
+const appFolder = `${productName} ${version}`
+const zipName = `${name}-${version}-win-x64.zip`
 const tar = join(process.env.SystemRoot, 'System32', 'tar.exe')
+const powershell = join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
 
 try {
   const packageDir = join(staging, appFolder)
   await cp(electronDir, packageDir, { recursive: true })
-  await rename(join(packageDir, 'electron.exe'), join(packageDir, 'Music Player.exe'))
-  await rename(join(packageDir, 'electron_wer.dll'), join(packageDir, 'Music Player_wer.dll'))
+  const packagedExe = join(packageDir, `${productName}.exe`)
+  await rename(join(packageDir, 'electron.exe'), packagedExe)
+  await rename(join(packageDir, 'electron_wer.dll'), join(packageDir, `${productName}_wer.dll`))
+  execFileSync(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'RemoteSigned',
+    '-File', join(root, 'scripts', 'set-windows-icon.ps1'),
+    '-Executable', packagedExe, '-Icon', join(root, 'src', 'assets', 'mustplay.ico')], { stdio: 'inherit' })
   await rm(join(packageDir, 'resources', 'default_app.asar'))
   const appDir = join(packageDir, 'resources', 'app')
   await mkdir(appDir)

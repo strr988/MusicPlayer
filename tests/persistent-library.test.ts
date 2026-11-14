@@ -13,7 +13,7 @@ let databasePath: string
 let library: Library | undefined
 
 beforeEach(async () => {
-  temp = await mkdtemp(join(tmpdir(), 'music-player-sqlite-'))
+  temp = await mkdtemp(join(tmpdir(), 'mustplay-sqlite-'))
   folder = join(temp, 'music')
   await mkdir(folder)
   databasePath = join(temp, 'library.sqlite3')
@@ -51,7 +51,7 @@ it('persists tracks, source IDs and canonical folders across reopening and overl
   expect(db.prepare('SELECT COUNT(*) AS count FROM imported_folders').get()).toEqual({ count: 2 })
   expect(db.prepare('SELECT COUNT(*) AS count FROM sources WHERE available = 1').get()).toEqual({ count: 2 })
   expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
-  expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 8 })
+  expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 11 })
 })
 
 it('retains the track when moving a file on the same volume and revokes the old media ID', async () => {
@@ -72,7 +72,7 @@ it('retains the track when moving a file on the same volume and revokes the old 
   const moved = await reopened.importFolder(destination)
   const newSource = reopened.getSourceId(id)!
   expect(newSource).not.toBe(oldSource)
-  expect(moved.tracks).toEqual([{ ...imported.tracks[0], artworkUrl: `music-player://app/artwork/${newSource}` }])
+  expect(moved.tracks).toEqual([{ ...imported.tracks[0], artworkUrl: `mustplay://app/artwork/${newSource}` }])
   expect(await reopened.getAvailableSource(newSource)).toMatchObject({ path: await realpath(to) })
   expect(await reopened.getAvailableSource(oldSource)).toBeUndefined()
   expect(await readFile(to)).toEqual(await readFile(mp3))
@@ -81,7 +81,7 @@ it('retains the track when moving a file on the same volume and revokes the old 
   await rename(to, upperCase)
   const renamed = await reopened.importFolder(destination)
   const renamedSource = reopened.getSourceId(id)!
-  expect(renamed.tracks).toEqual([{ ...imported.tracks[0], artworkUrl: `music-player://app/artwork/${renamedSource}` }])
+  expect(renamed.tracks).toEqual([{ ...imported.tracks[0], artworkUrl: `mustplay://app/artwork/${renamedSource}` }])
   expect(await reopened.getAvailableSource(renamedSource)).toMatchObject({ path: await realpath(upperCase) })
 
   await copyFile(upperCase, join(destination, 'copy.mp3'))

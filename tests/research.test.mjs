@@ -48,7 +48,7 @@ it('uses all six balanced orders in each block of slots', () => {
 })
 
 it('prepares blind playback, validates manual ratings and exports only allowlisted fields', async () => {
-  directory = await mkdtemp(join(tmpdir(), 'music-player-research-'))
+  directory = await mkdtemp(join(tmpdir(), 'mustplay-research-'))
   const audio = await readFile(new URL('./fixtures/01-tone.mp3', import.meta.url))
   await writeFile(join(directory, 'PRIVATE audio.mp3'), audio)
   const manifestPath = join(directory, 'map.json')

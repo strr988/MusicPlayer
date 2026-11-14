@@ -1,25 +1,27 @@
 import { randomInt } from 'node:crypto'
 import { mkdir, readdir } from 'node:fs/promises'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { app, BrowserWindow, dialog, ipcMain, net, protocol, session } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, protocol, session } from 'electron'
 import type { IpcMainInvokeEvent, WebContents, WebPreferences } from 'electron'
-import { channels, maxWavePulse, playerOrigin, playlistNameLimit, waveModes } from '../shared/contracts'
-import type { ImportResult, RescanResult, WaveMode } from '../shared/contracts'
+import { channels, interfaceScales, isSoundEffect, maxWavePulse, playerOrigin, playerScheme, playlistNameLimit, themeBackground, waveModes } from '../shared/contracts'
+import type { ImportResult, InterfaceScale, RescanResult, WaveMode } from '../shared/contracts'
+import { hasTitleBarOverlay, titleBarColors, windowChrome } from './window-chrome'
 import { Library } from './library'
 import { serveMedia } from './media'
 import { Artwork } from './artwork'
 import { validatePlaybackEvent, validatePreference } from './feedback-validation'
 import { validatePlaybackSession } from './playback-session'
 import { registerPlayerExperience } from './player-experience'
-import { resolveLibraryPath } from './library-profile'
+import { resolveLibraryPath, resolveProfileDirectory } from './library-profile'
 import { explainWave, generateWave } from '../recommendations/engine'
 import type { RecommendationContext } from '../recommendations/engine'
 
-const scheme = 'music-player'
+const appIcon = fileURLToPath(new URL('./mustplay.ico', import.meta.url))
 const idPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 protocol.registerSchemesAsPrivileged([{
-  scheme,
-  privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true },
+  scheme: playerScheme,
+  privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true },
 }])
 
 const developmentEntry = !app.isPackaged && process.env.ELECTRON_RENDERER_URL
@@ -114,6 +116,55 @@ function registerIpc(library: Library): void {
         intensity < 0 || intensity > maxWavePulse) throw new Error('Invalid Wave pulse intensity')
     library.setWavePulse(intensity)
   })
+  ipcMain.handle(channels.setTheme, (event, ...args: unknown[]) => {
+    const player = senderWindow(event)
+    const [theme] = args
+    if (args.length !== 1 || (theme !== 'dark' && theme !== 'light')) throw new Error('Invalid theme')
+    library.setTheme(theme)
+    nativeTheme.themeSource = theme
+    player.setBackgroundColor(themeBackground[theme])
+    if (hasTitleBarOverlay) player.setTitleBarOverlay(titleBarColors(theme))
+  })
+  ipcMain.handle(channels.getInterfaceScale, (event, ...args: unknown[]) => {
+    senderWindow(event)
+    if (args.length) throw new Error('Unexpected interface scale arguments')
+    return library.getInterfaceScale()
+  })
+  ipcMain.handle(channels.setInterfaceScale, (event, ...args: unknown[]) => {
+    const player = senderWindow(event)
+    const [scale] = args as InterfaceScale[]
+    if (args.length !== 1 || !interfaceScales.includes(scale)) throw new Error('Invalid interface scale')
+    library.setInterfaceScale(scale)
+    player.webContents.setZoomFactor(scale / 100)
+  })
+  ipcMain.handle(channels.getSoundEffect, (event, ...args: unknown[]) => {
+    senderWindow(event)
+    if (args.length) throw new Error('Unexpected sound effect arguments')
+    return library.getSoundEffect()
+  })
+  ipcMain.handle(channels.setSoundEffect, (event, ...args: unknown[]) => {
+    senderWindow(event)
+    const [effect] = args
+    if (args.length !== 1 || !isSoundEffect(effect)) throw new Error('Invalid sound effect')
+    library.setSoundEffect(effect)
+  })
+  ipcMain.handle(channels.setReverb, (event, ...args: unknown[]) => {
+    senderWindow(event)
+    const [effect, enabled] = args
+    if (args.length !== 2 || !isSoundEffect(effect) || typeof enabled !== 'boolean') throw new Error('Invalid reverb setting')
+    library.setReverb(effect, enabled)
+  })
+  ipcMain.handle(channels.getDiscoMode, (event, ...args: unknown[]) => {
+    senderWindow(event)
+    if (args.length) throw new Error('Unexpected disco arguments')
+    return library.getDiscoMode()
+  })
+  ipcMain.handle(channels.setDiscoMode, (event, ...args: unknown[]) => {
+    senderWindow(event)
+    const [enabled] = args
+    if (args.length !== 1 || typeof enabled !== 'boolean') throw new Error('Invalid disco setting')
+    library.setDiscoMode(enabled)
+  })
   ipcMain.handle(channels.getPlaylists, (event) => {
     senderWindow(event)
     return library.getPlaylists()
@@ -196,18 +247,25 @@ function registerIpc(library: Library): void {
 }
 
 async function start(): Promise<void> {
-  const userData = app.getPath('userData')
+  const defaultProfile = join(app.getPath('appData'), app.getName())
+  const current = app.getPath('userData')
+  const userData = current === defaultProfile && !app.commandLine.hasSwitch('user-data-dir')
+    ? resolveProfileDirectory(current, join(app.getPath('appData'), 'Music Player'))
+    : current
   await mkdir(userData, { recursive: true })
+  if (userData !== current) app.setPath('userData', userData)
+  app.setAppUserModelId('mustplay')
   // The profile has one writer for filesystem scans and playback availability updates.
   if (!app.requestSingleInstanceLock()) {
     app.quit()
     return
   }
   const library = new Library(resolveLibraryPath(userData))
+  nativeTheme.themeSource = library.getTheme()
   const artwork = new Artwork(library)
   app.once('will-quit', () => library.close())
 
-  const playerSession = session.fromPartition('music-player')
+  const playerSession = session.fromPartition('mustplay')
   const canEnterFullscreen = (contents: WebContents | null, permission: string, details: {
     isMainFrame: boolean
     requestingUrl?: string
@@ -229,7 +287,7 @@ async function start(): Promise<void> {
     }
   }
 
-  playerSession.protocol.handle(scheme, async (request) => {
+  playerSession.protocol.handle(playerScheme, async (request) => {
     const url = new URL(request.url)
     if (url.host !== 'app' || url.username || url.password || url.search) return new Response(null, { status: 404 })
     if (request.method !== 'GET' && request.method !== 'HEAD') {
@@ -237,7 +295,11 @@ async function start(): Promise<void> {
     }
     if (url.pathname.startsWith('/audio/')) {
       const id = url.pathname.slice('/audio/'.length)
-      return idPattern.test(id) ? serveMedia(request, library, id) : new Response(null, { status: 404 })
+      const response = idPattern.test(id) ? await serveMedia(request, library, id) : new Response(null, { status: 404 })
+      if (developmentUrl && request.headers.get('origin') === developmentUrl.origin) {
+        response.headers.set('Access-Control-Allow-Origin', developmentUrl.origin)
+      }
+      return response
     }
     if (url.pathname.startsWith('/artwork/')) {
       const id = url.pathname.slice('/artwork/'.length)
@@ -255,21 +317,25 @@ async function start(): Promise<void> {
     sandbox: true,
     nodeIntegration: false,
   }
-  const experience = registerPlayerExperience(library, () => window, senderWindow, entryUrl, preferences)
+  const experience = registerPlayerExperience(library, () => window, senderWindow, entryUrl, preferences, appIcon)
   app.on('before-quit', experience.beginQuit)
   app.once('will-quit', experience.dispose)
 
   async function createWindow(): Promise<void> {
     const player = new BrowserWindow({
+      ...windowChrome(library.getTheme()),
       width: 1100,
       height: 760,
       minWidth: 620,
       minHeight: 520,
-      title: 'Music Player',
-      backgroundColor: '#14131a',
+      title: 'mustplay',
+      icon: appIcon,
+      backgroundColor: themeBackground[library.getTheme()],
       autoHideMenuBar: true,
       webPreferences: {
         ...preferences,
+        zoomMode: 'isolated',
+        zoomFactor: library.getInterfaceScale() / 100,
         // Keep muted playback and automatic transitions running in a hidden window.
         backgroundThrottling: false,
       },
@@ -298,9 +364,9 @@ async function start(): Promise<void> {
 }
 
 function onStartupError(error: unknown): void {
-  console.error('Music Player failed to start', error)
+  console.error('mustplay failed to start', error)
   if (app.isPackaged) {
-    dialog.showErrorBox('Music Player', 'Не удалось открыть плеер. Проверьте доступ к папке профиля и версию базы медиатеки.')
+    dialog.showErrorBox('mustplay', 'Не удалось открыть плеер. Проверьте доступ к папке профиля и версию базы медиатеки.')
   }
   app.exit(1)
 }

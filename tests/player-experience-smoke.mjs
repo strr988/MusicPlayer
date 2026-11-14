@@ -16,29 +16,47 @@ export async function verifyPlayerExperience({ player, folder, run, click, waitF
   await waitFor(`${pulse} && !${pulse}.disabled`, 'pulse settings loaded')
   const getMini = () => BrowserWindow.getAllWindows().find(window => window !== player)
   async function openMini() {
-    await run('window.musicPlayer.openMiniPlayer()')
+    await run('window.mustplay.openMiniPlayer()')
     const mini = getMini()
     assert.ok(mini)
     assert.equal(player.isVisible(), false)
     return mini
   }
+  const colorScheme = 'getComputedStyle(document.documentElement).colorScheme'
   if (restart) {
     assert.equal(globalShortcut.isRegistered('Ctrl+Shift+F11'), true)
     assert.equal(await run(`${pulse}.valueAsNumber`), 275)
     const mini = await openMini()
+    assert.equal(await run(colorScheme), 'light')
+    assert.equal(await mini.webContents.executeJavaScript(colorScheme), 'light')
     assert.equal(mini.isAlwaysOnTop(), true)
     assert.equal(await run('document.querySelector("audio").paused'), true)
     mini.close()
     return
   }
+  assert.equal(await run(colorScheme), 'dark')
+  assert.equal(await run('document.querySelector(".window-title img").decode().then(() => true)'), true)
+  await assert.rejects(run('window.mustplay.setTheme("sepia")'), /Renderer script failed/)
+  await run(`(() => {
+    const start = document.startViewTransition.bind(document)
+    document.startViewTransition = update => {
+      const transition = start(update)
+      window.themeTransition = transition.finished
+      return transition
+    }
+  })()`)
+  for (const [label, theme] of [['светлую', 'light'], ['тёмную', 'dark'], ['светлую', 'light']]) {
+    await click(`Включить ${label} тему`)
+    assert.equal(await run(`window.themeTransition.then(() => ${colorScheme})`), theme)
+  }
   assert.equal(await run(`${pulse}.valueAsNumber`), 100)
-  assert.equal(await run('window.musicPlayer.setWavePulse(301).then(() => false, () => true)'), true)
+  assert.equal(await run('window.mustplay.setWavePulse(301).then(() => false, () => true)'), true)
   await run(`(() => {
     const input = ${pulse}
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '275')
     input.dispatchEvent(new Event('input', { bubbles: true }))
   })()`)
-  await waitFor('(async () => (await window.musicPlayer.getWavePulse()) === 275)()', 'slider saves pulse intensity')
+  await waitFor('(async () => (await window.mustplay.getWavePulse()) === 275)()', 'slider saves pulse intensity')
   assert.equal(await run('document.querySelector(".wave-art").style.getPropertyValue("--wave-intensity")'), '2.75')
 
   const bindings = { toggle: 'Ctrl+Shift+F11', previous: 'Ctrl+Alt+F7', next: 'Ctrl+Alt+F8',
@@ -73,30 +91,30 @@ export async function verifyPlayerExperience({ player, folder, run, click, waitF
     player.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'F11', modifiers })
     await waitFor(`${first}.textContent === "Ctrl+Shift+F11"`, 'combination is captured as accelerator')
     await click('Сохранить')
-    await waitFor('(async () => (await window.musicPlayer.getShortcuts()).toggle.registered)()', 'recorded shortcut saved')
+    await waitFor('(async () => (await window.mustplay.getShortcuts()).toggle.registered)()', 'recorded shortcut saved')
     assert.equal(globalShortcut.isSuspended(), false)
     for (const [action, key] of Object.entries(bindings).filter(([action]) => action !== 'toggle')) {
-      const result = await run(`window.musicPlayer.setShortcut(${JSON.stringify(action)}, ${JSON.stringify(key)})`)
+      const result = await run(`window.mustplay.setShortcut(${JSON.stringify(action)}, ${JSON.stringify(key)})`)
       assert.equal(result.status, 'saved', `Windows registers ${key}`)
       assert.equal(globalShortcut.isRegistered(key), true)
     }
   } finally {
     globalShortcut.register = register
   }
-  assert.deepEqual(await run('window.musicPlayer.setShortcut("mute", "shift+ctrl+f11")'), { status: 'duplicate' })
+  assert.deepEqual(await run('window.mustplay.setShortcut("mute", "shift+ctrl+f11")'), { status: 'duplicate' })
   assert.equal(globalShortcut.register('Ctrl+Shift+F12', () => {}), true)
   try {
-    assert.deepEqual(await run('window.musicPlayer.setShortcut("next", "Ctrl+Shift+F12")'), { status: 'unavailable' })
+    assert.deepEqual(await run('window.mustplay.setShortcut("next", "Ctrl+Shift+F12")'), { status: 'unavailable' })
     assert.equal(globalShortcut.isRegistered(bindings.next), true)
   } finally {
     globalShortcut.unregister('Ctrl+Shift+F12')
   }
   // Physical media keys may be owned by Windows or another active media session.
-  const media = await run('window.musicPlayer.setShortcut("previous", "MediaPreviousTrack")')
+  const media = await run('window.mustplay.setShortcut("previous", "MediaPreviousTrack")')
   assert.ok(['saved', 'unavailable'].includes(media.status))
   console.log('MediaPreviousTrack registration:', media.status)
   if (media.status === 'saved') assert.equal(globalShortcut.isRegistered('MediaPreviousTrack'), true)
-  await run('window.musicPlayer.setShortcut("previous", null)')
+  await run('window.mustplay.setShortcut("previous", null)')
   assert.equal(globalShortcut.isRegistered('MediaPreviousTrack'), false)
   assert.equal(globalShortcut.isRegistered(bindings.previous), false)
   app.once('will-quit', () => {
@@ -114,7 +132,7 @@ export async function verifyPlayerExperience({ player, folder, run, click, waitF
   await waitFor('document.querySelector(".lyrics-lines button[aria-current]")?.textContent === "Первая строка"', 'LRC active row')
   assert.equal(await run('document.querySelector(".text-music h1").textContent'), 'Текстомузыка')
   assert.equal(await run('document.querySelector("audio") === window.originalAudio'), true)
-  const screenshotFolder = process.env.MUSIC_PLAYER_SCREENSHOTS
+  const screenshotFolder = process.env.MUSTPLAY_SCREENSHOTS
   if (screenshotFolder) {
     await mkdir(screenshotFolder, { recursive: true })
     const image = await player.webContents.capturePage()
@@ -163,7 +181,7 @@ export async function verifyPlayerExperience({ player, folder, run, click, waitF
   assert.deepEqual({ sandbox, contextIsolation, nodeIntegration }, { sandbox: true, contextIsolation: true, nodeIntegration: false })
   assert.equal(player.isVisible(), false)
   assert.equal(await miniRun('document.querySelectorAll("audio").length'), 0)
-  assert.equal(await miniRun('typeof window.musicPlayer'), 'undefined')
+  assert.equal(await miniRun('typeof window.mustplay'), 'undefined')
   assert.equal(await miniRun(`(() => {
     const main = document.querySelector('.mini-player')
     return main.scrollWidth <= innerWidth && main.scrollHeight <= innerHeight
@@ -251,7 +269,7 @@ export async function verifyPlayerExperience({ player, folder, run, click, waitF
       window.sleepClock += 5001
     })()`)
     await waitForAudio('audio.paused && Math.abs(audio.volume - 0.6) < 0.001', 'deadline pauses and restores the latest volume')
-    assert.deepEqual(await run('window.musicPlayer.getVolume()'), { level: 0.6, muted: false })
+    assert.deepEqual(await run('window.mustplay.getVolume()'), { level: 0.6, muted: false })
   } finally {
     await run('Date.now = window.realNow; void 0')
   }
@@ -283,10 +301,29 @@ async function verifyFullPlayer({ player, run, click, waitFor, waitForAudio, mp3
   assert.equal(await run(`${modal}.querySelector("h1").textContent`), 'Test Tone MP3')
   assert.equal(await run('document.querySelectorAll("audio").length'), 1)
   if (!app.isPackaged) {
-    await waitFor(`${cover}.querySelector("img")?.naturalWidth > 0 && !!${stage}.style.backgroundColor`, 'local artwork colors the stage')
+    await waitFor(`${cover}.querySelector("img")?.naturalWidth > 0 && !!${stage}.style.getPropertyValue("--cover-tint")`, 'local artwork colors the stage')
   }
   await hover(cover)
   await waitFor(`getComputedStyle(${cover}.querySelector(".full-cover-controls")).opacity === "1"`, 'hover reveals full cover controls')
+  const fullVolume = modal + '.querySelector(".full-volume-slider input")'
+  await hover(modal + '.querySelector(".full-volume > button")')
+  await waitFor(`getComputedStyle(${fullVolume}.parentElement).opacity === "1"`, 'hover reveals fullscreen volume')
+  await run(`(() => {
+    const input = ${fullVolume}
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '65')
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })()`)
+  await waitForAudio('audio.volume === 0.65', 'fullscreen volume adjusts the shared audio')
+  await run('window.mustplay.setVolume(1, false)')
+  await run(`(() => {
+    const input = ${fullVolume}
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '100')
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })()`)
+  await waitForAudio('audio.volume === 1', 'fullscreen volume can return to 100%')
+  await press('Звуковые эффекты')
+  await waitFor(`!!${modal}.querySelector(".sound-menu:popover-open")`, 'fullscreen opens sound presets')
+  await run(`${modal}.querySelector(".sound-menu").hidePopover()`)
   await press('Пауза')
   await waitForAudio('audio === window.originalAudio && audio.paused', 'fullscreen pauses the same audio')
   await run(`(() => {

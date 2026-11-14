@@ -7,7 +7,7 @@ import { catalogSize, longTitle } from './fixtures/interface-catalog.mjs'
 
 export async function verifyInterface({ player, run, click, waitFor, waitForAudio, folder, pendingRows }) {
   const { webContents } = player
-  const output = process.env.MUSIC_PLAYER_SCREENSHOTS
+  const output = process.env.MUSTPLAY_SCREENSHOTS
   const queueToggle = '.queue-toggle'
   const noOverflow = String.raw`(() => {
     const main = document.querySelector('main')
@@ -150,18 +150,18 @@ export async function verifyInterface({ player, run, click, waitFor, waitForAudi
   key('Enter')
   await waitForAudio('audio.paused', 'keyboard pauses playback')
 
-  const events = () => run('window.musicPlayer.getListeningData().then(data => data.events)')
-  await waitFor('(async () => (await window.musicPlayer.getListeningData()).events.length === 1)()', 'one started event')
+  const events = () => run('window.mustplay.getListeningData().then(data => data.events)')
+  await waitFor('(async () => (await window.mustplay.getListeningData()).events.length === 1)()', 'one started event')
   const initialEvents = await events()
   assert.deepEqual(initialEvents.map(event => event.type), ['started'])
   await click('Библиотека')
   await click('Воспроизвести следующим: ' + longTitle)
   await click('Добавить в очередь: ' + longTitle)
-  const pending = await run('window.musicPlayer.getPlaybackSession().then(session => session.queue.pending.length)')
+  const pending = await run('window.mustplay.getPlaybackSession().then(session => session.queue.pending.length)')
   assert.equal(pending, catalogSize + 1)
   assert.equal(await run('document.querySelector(".queue-panel").hidden'), true)
   await click('Лайк текущему треку')
-  await waitFor('(async () => (await window.musicPlayer.getListeningData()).preferences.some(item => item.liked))()', 'player saves like')
+  await waitFor('(async () => (await window.mustplay.getListeningData()).preferences.some(item => item.liked))()', 'player saves like')
   await waitFor('!!document.querySelector("tbody button[aria-pressed=true]")', 'track row reflects the player like')
 
   for (const [width, height] of [[620, 700], [900, 700], [1280, 800], [1480, 1024]]) {
@@ -289,11 +289,11 @@ export async function verifyInterface({ player, run, click, waitFor, waitForAudi
   const pulse = 'input[aria-label="Сила пульсации"]'
   await waitFor('document.querySelector(' + JSON.stringify(pulse) + ')?.disabled === false', 'pulse slider ready')
   await setInput(pulse, '0')
-  await waitFor('(async () => (await window.musicPlayer.getWavePulse()) === 0)()', 'pulse can be disabled')
+  await waitFor('(async () => (await window.mustplay.getWavePulse()) === 0)()', 'pulse can be disabled')
   await click('Моя волна')
   await focus('input[name="wave-mode"]:checked')
   key('Right')
-  await waitFor('(async () => (await window.musicPlayer.getWaveMode()) === "discovery")()', 'arrow key changes the Wave mode')
+  await waitFor('(async () => (await window.mustplay.getWaveMode()) === "discovery")()', 'arrow key changes the Wave mode')
   await waitFor('document.querySelector(\'input[value="discovery"]\').checked', 'selected mode reflected on the page')
   assert.deepEqual(await events(), initialEvents)
   await click('Запустить волну')

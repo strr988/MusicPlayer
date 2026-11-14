@@ -1,8 +1,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { defaultWavePulse } from '../../shared/contracts'
-import type { ImportIssue, LibraryTrack, TrackPreference, WaveMode } from '../../shared/contracts'
+import type { ImportIssue, LibraryTrack, Theme, TrackPreference, WaveMode } from '../../shared/contracts'
 import { Icon } from './icons'
 import { useDesktopPlayback } from './desktop-playback'
+import { DiscoLayer, pulseDisco, useDiscoMode } from './disco'
 import { FullPlayer } from './full-player'
 import { Library } from './library'
 import { LyricsPanel } from './lyrics-panel'
@@ -12,7 +13,9 @@ import { PlayerSettings } from './player-settings'
 import { usePlayback } from './playback'
 import { Playlists } from './playlists'
 import { QueuePanel } from './queue-panel'
+import { ThemeToggle } from './theme-toggle'
 import { Wave } from './wave'
+import { WindowTitle } from './window-title'
 
 const sections = [
   { id: 'library', label: 'Библиотека', icon: 'library' },
@@ -24,7 +27,7 @@ const sections = [
 type Section = typeof sections[number]['id']
 type LyricsMode = 'sync' | 'read'
 
-export function App() {
+export function App({ initialTheme }: { initialTheme: Theme }) {
   const [tracks, setTracks] = useState<LibraryTrack[]>([])
   const [libraryLoading, setLibraryLoading] = useState(true)
   const [libraryLoadFailed, setLibraryLoadFailed] = useState(false)
@@ -51,7 +54,14 @@ export function App() {
     setTracks(previous => previous.map(track => track.id === trackId ? { ...track, available: false } : track))
   })
   useMediaControls(playback)
-  useDesktopPlayback(playback, tracks.length > 0)
+  const miniVisible = useDesktopPlayback(playback, tracks.length > 0)
+  const discoLayer = useRef<HTMLDivElement>(null)
+  const fullDiscoLayer = useRef<HTMLDivElement>(null)
+  const disco = useDiscoMode(playback.audioEffects, playback.playing && !playback.loading &&
+    !playback.volume?.muted && !!playback.volume?.level, strength => {
+    if (miniVisible) void window.mustplay.publishDiscoBeat(strength).catch(() => {})
+    else pulseDisco(fullPlayerOpen ? fullDiscoLayer.current : discoLayer.current, strength)
+  })
 
   const [queueOpen, setQueueOpen] = useState(false)
   const [compactQueue, setCompactQueue] = useState(() => window.matchMedia('(width < 1080px)').matches)
@@ -130,7 +140,7 @@ export function App() {
 
   function openMini() {
     setNotice('')
-    void window.musicPlayer.openMiniPlayer().catch(() => setNotice('Не удалось открыть мини-плеер.'))
+    void window.mustplay.openMiniPlayer().catch(() => setNotice('Не удалось открыть мини-плеер.'))
   }
 
   function closeQueue() {
@@ -158,7 +168,7 @@ export function App() {
 
   useEffect(() => {
     let active = true
-    void window.musicPlayer.getWaveMode().then(mode => {
+    void window.mustplay.getWaveMode().then(mode => {
       if (active) setWaveMode(mode)
     }).catch(() => { if (active) setNotice('Не удалось загрузить режим «Моей волны».') })
     return () => { active = false }
@@ -166,7 +176,7 @@ export function App() {
 
   useEffect(() => {
     let active = true
-    void window.musicPlayer.getWavePulse().then(value => {
+    void window.mustplay.getWavePulse().then(value => {
       if (active) setWavePulse(value)
     }).catch(() => {
       if (active) {
@@ -181,7 +191,7 @@ export function App() {
     setWavePulse(value)
     setNotice('')
     const revision = ++pulseWrite.current
-    void window.musicPlayer.setWavePulse(value).catch(() => {
+    void window.mustplay.setWavePulse(value).catch(() => {
       if (pulseWrite.current === revision) setNotice('Не удалось сохранить силу пульсации.')
     })
   }
@@ -191,7 +201,7 @@ export function App() {
     setSavingWaveMode(true)
     setNotice('')
     try {
-      await window.musicPlayer.setWaveMode(mode)
+      await window.mustplay.setWaveMode(mode)
       setWaveMode(mode)
     } catch { setNotice('Не удалось сохранить режим «Моей волны».') }
     finally { setSavingWaveMode(false) }
@@ -199,7 +209,7 @@ export function App() {
 
   useEffect(() => {
     let active = true
-    void window.musicPlayer.getListeningData().then(data => {
+    void window.mustplay.getListeningData().then(data => {
       if (active) { setPreferences(data.preferences); setPreferencesReady(true) }
     }).catch(() => { if (active) setNotice('Не удалось загрузить предпочтения. Перезапустите приложение.') })
     return () => { active = false }
@@ -210,7 +220,7 @@ export function App() {
     setPendingLike(true)
     setNotice('')
     try {
-      const value = await window.musicPlayer.setTrackPreference(trackId, !likedTrackIds.has(trackId))
+      const value = await window.mustplay.setTrackPreference(trackId, !likedTrackIds.has(trackId))
       setPreferences(previous => [...previous.filter(item => item.trackId !== trackId), value])
     } catch { setNotice('Не удалось сохранить лайк.') }
     finally { setPendingLike(false) }
@@ -218,7 +228,7 @@ export function App() {
 
   useEffect(() => {
     let active = true
-    void window.musicPlayer.getTracks().then(result => {
+    void window.mustplay.getTracks().then(result => {
       if (active) setTracks(result)
     }).catch(() => {
       if (active) setLibraryLoadFailed(true)
@@ -235,7 +245,7 @@ export function App() {
   async function refreshTracks(): Promise<void> {
     const current = ++trackRead.current
     try {
-      const result = await window.musicPlayer.getTracks()
+      const result = await window.mustplay.getTracks()
       if (current === trackRead.current) {
         setTracks(result)
         setLibraryLoadFailed(false)
@@ -251,7 +261,7 @@ export function App() {
     const failure = rescan ? 'Не удалось обновить медиатеку.' : 'Не удалось импортировать папку.'
     setScan(mode)
     try {
-      const result = await (rescan ? window.musicPlayer.rescanLibrary() : window.musicPlayer.importFolder())
+      const result = await (rescan ? window.mustplay.rescanLibrary() : window.mustplay.importFolder())
       if (result.status === 'cancelled') return
       setIssues(result.status === 'complete' ? result.issues : [])
       if (result.status === 'failed') {
@@ -283,9 +293,10 @@ export function App() {
     likeDisabled, toggleLike: () => { if (playback.track) void toggleLike(playback.track.id) },
   }
   return <div className="shell">
+    <WindowTitle />
+    {disco.enabled && <DiscoLayer ref={discoLayer} />}
     <div className="workspace">
       <nav className="section-nav" aria-label="Разделы" inert={covered}>
-        <span className="brand-mark" aria-hidden="true"><Icon name="music" /></span>
         {sections.map(item => <button key={item.id} ref={item.id === "library" ? libraryLink : undefined} type="button" aria-label={item.label} title={item.label}
           aria-current={section === item.id ? 'page' : undefined} onClick={() => {
             if (item.id === 'lyrics' && section !== 'lyrics') {
@@ -297,6 +308,7 @@ export function App() {
           disabled={item.id === 'playlists' && (libraryLoading || scan !== null)}>
           <Icon name={item.icon} /><span>{item.label}</span>
         </button>)}
+        <ThemeToggle initialTheme={initialTheme} reportError={setNotice} />
       </nav>
       <div className="content-frame">
         <main className="content" ref={content} inert={covered}>
@@ -335,7 +347,7 @@ export function App() {
                 canSeek={playback.duration !== null && !playback.loading} seek={playback.seek} />
             </div>
             {section === 'settings' && <PlayerSettings playback={playback} wavePulse={wavePulse}
-              changeWavePulse={changeWavePulse} openMini={openMini} />}
+              changeWavePulse={changeWavePulse} openMini={openMini} disco={disco} />}
           </div>
         </main>
         {playback.error && <p className="playback-error" role="alert">{playback.error}</p>}
@@ -346,7 +358,8 @@ export function App() {
     <Player {...playerControls} fullPlayerButton={fullPlayerButton} openFullPlayer={openFullPlayer}
       queueOpen={queueOpen} queueButton={queueButton} toggleQueue={() => queueOpen ? closeQueue() : setQueueOpen(true)}
       textMusicOpen={section === 'lyrics' && lyricsMode === 'sync'} textMusicButton={lyricsButton} toggleTextMusic={toggleTextMusic} />
-    <FullPlayer {...playerControls} dialog={fullDialog} open={fullPlayerOpen} close={() => void closeFullPlayer()}
+    <FullPlayer {...playerControls} dialog={fullDialog} open={fullPlayerOpen}
+      discoLayer={disco.enabled ? <DiscoLayer ref={fullDiscoLayer} /> : null} close={() => void closeFullPlayer()}
       openMini={() => void closeFullPlayer().then(openMini)} />
     <p className="sr-only" role="status">Треков в очереди: {playback.queue.pending.length}</p>
   </div>

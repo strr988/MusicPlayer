@@ -1,10 +1,10 @@
 {
-  "name": "music-player",
-  "version": "0.6.0",
+  "name": "mustplay",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "main": "out/main/index.js",
-  "productName": "Music Player",
+  "productName": "mustplay",
   "packageManager": "pnpm@11.25.0",
   "engines": { "node": "^24.22.0" },
   "scripts": {

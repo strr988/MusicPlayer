@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from 'react'
 import type { ImportIssue, LibraryTrack } from '../../shared/contracts'
 import { Artwork } from './artwork'
 import { EmptyState } from './empty-state'
-import { Icon, IconButton } from './icons'
+import { Icon, IconButton, LikeButton } from './icons'
 import { sortFields, visibleTracks } from './library-view'
 import type { SortDirection, SortField } from './library-view'
 import { ListPager, pageSize } from './list-pager'
@@ -133,7 +133,7 @@ export function Library({ tracks, loading, loadFailed, retryLoad, scan, notice, 
                 <td className="format-column"><span className="format">{track.format.toUpperCase()}</span></td>
                 <td className="time-column">{formatTime(track.durationSeconds)}</td>
                 <td><div className="track-actions">
-                  <IconButton icon="heart" label={'Лайк: ' + track.title} title="Лайк" aria-pressed={likedIds.has(track.id)}
+                  <LikeButton label={'Лайк: ' + track.title} title="Лайк" aria-pressed={likedIds.has(track.id)}
                     disabled={likeDisabled} onClick={() => toggleLike(track.id)} />
                   <TrackQueueActions title={track.title} disabled={!track.available || !ready}
                     add={next => addToQueue(track.id, next)} />

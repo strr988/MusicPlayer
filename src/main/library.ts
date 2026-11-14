@@ -9,7 +9,7 @@ import { LibraryStore } from './library-store'
 import type { LocalSource, ScanEntry } from './library-store'
 import { fileIdentity, moveKey, sameFile, sameIdentity } from './local-file'
 import type { FileIdentity } from './local-file'
-import type { RescanResult, ShortcutAction } from '../shared/contracts'
+import type { InterfaceScale, RescanResult, ShortcutAction, SoundEffect, SoundSettings, Theme } from '../shared/contracts'
 
 interface ScannedFile {
   path: string
@@ -101,6 +101,15 @@ export class Library implements ListeningDataReader {
   setVolume(volume: VolumePreference): void { this.store.setVolume(volume) }
   getWavePulse(): number { return this.store.getWavePulse() }
   setWavePulse(intensity: number): void { this.store.setWavePulse(intensity) }
+  getTheme(): Theme { return this.store.getTheme() }
+  setTheme(theme: Theme): void { this.store.setTheme(theme) }
+  getInterfaceScale(): InterfaceScale { return this.store.getInterfaceScale() }
+  setInterfaceScale(scale: InterfaceScale): void { this.store.setInterfaceScale(scale) }
+  getSoundEffect(): SoundSettings { return this.store.getSoundEffect() }
+  setSoundEffect(effect: SoundEffect): void { this.store.setSoundEffect(effect) }
+  setReverb(effect: SoundEffect, enabled: boolean): void { this.store.setReverb(effect, enabled) }
+  getDiscoMode(): boolean { return this.store.getDiscoMode() }
+  setDiscoMode(enabled: boolean): void { this.store.setDiscoMode(enabled) }
   getMiniPinned(): boolean { return this.store.getMiniPinned() }
   setMiniPinned(pinned: boolean): void { this.store.setMiniPinned(pinned) }
   getShortcuts() { return this.store.getShortcuts() }

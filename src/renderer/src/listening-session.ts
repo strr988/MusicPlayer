@@ -6,6 +6,8 @@ export class ListeningSession {
   private finished = false
   private activeSince: number | null = null
   private seconds = 0
+  private trackSeconds = 0
+  private rate = 1
 
   constructor(readonly trackId: string, readonly sessionId: string,
     private readonly emit: (event: PlaybackEventInput) => void,
@@ -26,9 +28,19 @@ export class ListeningSession {
 
   suspend(): void {
     if (this.activeSince !== null) {
-      this.seconds += Math.max(0, this.now() - this.activeSince) / 1000
+      const elapsed = Math.max(0, this.now() - this.activeSince) / 1000
+      this.seconds += elapsed
+      this.trackSeconds += elapsed * this.rate
       this.activeSince = null
     }
+  }
+
+  setRate(rate: number): void {
+    if (rate === this.rate) return
+    const active = this.activeSince !== null
+    this.suspend()
+    this.rate = rate
+    if (active) this.resume()
   }
 
   finish(reason: 'manual' | 'ended' | 'error', duration: number): void {
@@ -37,7 +49,7 @@ export class ListeningSession {
     this.finished = true
     if (!this.started && reason !== 'error') return
     const type = reason === 'manual' ? 'skipped' : reason === 'error' ? 'error' :
-      Number.isFinite(duration) && duration > 0 && this.seconds >= duration * 0.9 ? 'completed' : 'ended'
+      Number.isFinite(duration) && duration > 0 && this.trackSeconds >= duration * 0.9 ? 'completed' : 'ended'
     this.send(type)
   }
 

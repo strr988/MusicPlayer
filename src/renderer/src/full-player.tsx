@@ -1,12 +1,13 @@
 import { useLayoutEffect, useRef, useState } from 'react'
-import type { RefObject } from 'react'
+import type { CSSProperties, ReactNode, RefObject } from 'react'
 import { Artwork } from './artwork'
-import { IconButton } from './icons'
+import { IconButton, LikeButton } from './icons'
 import { LyricsPanel } from './lyrics-panel'
 import { TransportControls } from './player'
 import type { usePlayback } from './playback'
 import { QueuePanel } from './queue-panel'
 import { Timeline } from './timeline'
+import { SoundMenu } from './sound-menu'
 
 function coverTint(image: HTMLImageElement): string | undefined {
   const canvas = document.createElement('canvas')
@@ -25,7 +26,7 @@ function coverTint(image: HTMLImageElement): string | undefined {
       blue += b * weight
       total += weight
     }
-    if (total > 0) return `rgb(${Math.round(14 + red / total * 0.43)} ${Math.round(11 + green / total * 0.43)} ${Math.round(18 + blue / total * 0.43)})`
+    if (total > 0) return `rgb(${Math.round(red / total)} ${Math.round(green / total)} ${Math.round(blue / total)})`
   } catch {
     // Some images cannot be sampled. The fullscreen player keeps its theme color.
   }
@@ -39,6 +40,7 @@ type FullPlayerControls = {
   toggleLike: () => void
   close: () => void
   openMini: () => void
+  discoLayer: ReactNode
 }
 
 export function FullPlayer({ dialog, open, ...controls }: FullPlayerControls & {
@@ -51,7 +53,7 @@ export function FullPlayer({ dialog, open, ...controls }: FullPlayerControls & {
   </dialog>
 }
 
-function FullPlayerContent({ playback, hasTracks, liked, likeDisabled, toggleLike, close, openMini }: FullPlayerControls) {
+function FullPlayerContent({ playback, hasTracks, liked, likeDisabled, toggleLike, close, openMini, discoLayer }: FullPlayerControls) {
   const [side, setSide] = useState<'lyrics' | 'queue' | null>(null)
   const [lyricsMode, setLyricsMode] = useState<'sync' | 'read'>('sync')
   const [tint, setTint] = useState<{ url: string; color: string }>()
@@ -59,7 +61,8 @@ function FullPlayerContent({ playback, hasTracks, liked, likeDisabled, toggleLik
   const queueClose = useRef<HTMLButtonElement>(null)
   const exit = useRef<HTMLButtonElement>(null)
   const moreMenu = useRef<HTMLDivElement>(null)
-  const { track, loading, playing } = playback
+  const { track, loading, playing, volume } = playback
+  const level = Math.round((volume?.level ?? 1) * 100)
   const url = track?.artworkUrl
   useLayoutEffect(() => { exit.current?.focus() }, [])
   useLayoutEffect(() => {
@@ -73,7 +76,8 @@ function FullPlayerContent({ playback, hasTracks, liked, likeDisabled, toggleLik
 
   return <>
     <div className="full-player-stage" data-side={side ?? undefined}
-      style={{ backgroundColor: tint && tint.url === url ? tint.color : undefined }}>
+      style={{ '--cover-tint': tint?.url === url ? tint?.color : undefined } as CSSProperties}>
+      {discoLayer}
       <IconButton ref={exit} icon="collapse" label="Свернуть полноэкранный плеер" className="full-player-exit" onClick={close} />
       <div className="full-player-center">
         <div className="full-player-cover" data-paused={!playing}>
@@ -82,15 +86,26 @@ function FullPlayerContent({ playback, hasTracks, liked, likeDisabled, toggleLik
             if (url && color) setTint({ url, color })
           }} />
           <div className="full-cover-controls">
+            <div className="full-volume">
+              <IconButton icon={volume?.muted ? 'mute' : 'volume'} label="Без звука"
+                title={volume?.muted ? 'Включить звук' : 'Отключить звук'}
+                aria-pressed={volume?.muted ?? false} disabled={!volume} onClick={playback.toggleMute} />
+              <div className="full-volume-slider">
+                <input aria-label="Громкость" type="range" min={0} max={100} value={level} disabled={!volume}
+                  aria-valuetext={level + '%'} onChange={event => playback.setVolumeLevel(event.currentTarget.valueAsNumber / 100)} />
+              </div>
+            </div>
             <IconButton ref={queueButton} icon="queue" label="Очередь" className="full-queue-button"
               aria-expanded={side === 'queue'} aria-controls="full-playback-queue"
               onClick={() => side === 'queue' ? closeQueue() : setSide('queue')} />
             <TransportControls playback={playback} hasTracks={hasTracks} />
             <div className="full-cover-actions">
               <IconButton icon="more" label="Дополнительно" popoverTarget="full-player-menu" />
+              <SoundMenu sound={playback.sound} saving={playback.savingSoundEffect} error={playback.soundEffectError}
+                changeEffect={playback.changeSoundEffect} changeReverb={playback.changeReverb} />
               <IconButton icon="lyrics" label="Текстомузыка" aria-pressed={side === 'lyrics'}
                 onClick={() => { setLyricsMode('sync'); setSide(side === 'lyrics' ? null : 'lyrics') }} />
-              <IconButton icon="heart" label="Лайк текущему треку" aria-pressed={liked} disabled={!track || likeDisabled}
+              <LikeButton label="Лайк текущему треку" aria-pressed={liked} disabled={!track || likeDisabled}
                 onClick={toggleLike} />
             </div>
           </div>

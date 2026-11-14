@@ -32,6 +32,28 @@ it('seeking to the end is not completed listening', () => {
   expect(events[1]).toMatchObject({ type: 'ended', listenedSeconds: 1 })
 })
 
+it('counts source time across speed changes while retaining wall time in history', () => {
+  const { session, events, advance } = setup()
+  session.setRate(1.25)
+  session.playing()
+  advance(4)
+  session.setRate(0.8)
+  advance(5)
+  session.finish('ended', 10)
+  expect(events[1]).toMatchObject({ type: 'completed', listenedSeconds: 9 })
+})
+
+it('slowed playback and a seek do not mark unplayed audio complete', () => {
+  const { session, events, advance } = setup()
+  session.setRate(0.8)
+  session.playing()
+  advance(9)
+  session.suspend()
+  advance(3)
+  session.finish('ended', 10)
+  expect(events[1]).toMatchObject({ type: 'ended', listenedSeconds: 9 })
+})
+
 it('resumes the clock after seek without manufacturing a playback start', () => {
   const { session, events, advance } = setup()
   session.resume(); advance(10)

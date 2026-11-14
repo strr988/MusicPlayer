@@ -15,13 +15,13 @@ const temp = realpathSync(tmpdir())
 
 async function collect() {
   const { default: executable } = await import('electron')
-  const repetitions = Number(process.env.MUSIC_PLAYER_PROFILE_REPEATS ?? 3)
-  const sizes = (process.env.MUSIC_PLAYER_PROFILE_SIZES ?? '1000,5000,10000').split(',').map(Number)
+  const repetitions = Number(process.env.MUSTPLAY_PROFILE_REPEATS ?? 3)
+  const sizes = (process.env.MUSTPLAY_PROFILE_SIZES ?? '1000,5000,10000').split(',').map(Number)
   const samples = []
   let machine
   for (const size of sizes) {
     for (let repetition = 1; repetition <= repetitions; repetition++) {
-      const root = mkdtempSync(join(temp, 'music-player-profile-'))
+      const root = mkdtempSync(join(temp, 'mustplay-profile-'))
       try {
         await promisify(execFile)(executable, [fileURLToPath(import.meta.url), root, String(size), String(repetition)], { timeout: 60_000 })
         const result = JSON.parse(readFileSync(join(root, 'result.json'), 'utf8'))
@@ -31,13 +31,13 @@ async function collect() {
       } finally {
         const actual = realpathSync(root)
         assert.equal(dirname(actual), temp)
-        assert.ok(basename(actual).startsWith('music-player-profile-'))
+        assert.ok(basename(actual).startsWith('mustplay-profile-'))
         rmSync(actual, { recursive: true, force: true, maxRetries: 5 })
       }
     }
   }
   const json = JSON.stringify({ machine, samples }, null, 2)
-  if (process.env.MUSIC_PLAYER_PROFILE_OUTPUT) writeFileSync(process.env.MUSIC_PLAYER_PROFILE_OUTPUT, json + '\n')
+  if (process.env.MUSTPLAY_PROFILE_OUTPUT) writeFileSync(process.env.MUSTPLAY_PROFILE_OUTPUT, json + '\n')
   else console.log(json)
 }
 
@@ -91,8 +91,8 @@ async function profile({ app, BrowserWindow, dialog, ipcMain }, root, size, repe
   const folder = join(root, 'audio')
   mkdirSync(folder)
   writeFileSync(join(folder, 'tone.mp3'), mp3WithArtwork(fixture('01-tone.mp3'), fixture('cover.jpg')))
-  await import(process.env.MUSIC_PLAYER_PROFILE_BUILD ?
-    pathToFileURL(join(process.env.MUSIC_PLAYER_PROFILE_BUILD, 'main', 'index.js')).href : '../out/main/index.js')
+  await import(process.env.MUSTPLAY_PROFILE_BUILD ?
+    pathToFileURL(join(process.env.MUSTPLAY_PROFILE_BUILD, 'main', 'index.js')).href : '../out/main/index.js')
   await app.whenReady()
   while (!BrowserWindow.getAllWindows().length) await delay(20)
   const player = BrowserWindow.getAllWindows()[0]
@@ -108,7 +108,7 @@ async function profile({ app, BrowserWindow, dialog, ipcMain }, root, size, repe
   }
   await waitFor('!!document.querySelector(".play-button")')
   dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] })
-  const [realTrack] = (await run('window.musicPlayer.importFolder()')).tracks
+  const [realTrack] = (await run('(window.mustplay ?? window.musicPlayer).importFolder()')).tracks
   assert.ok(realTrack.artworkUrl)
   wc.debugger.attach()
   await wc.debugger.sendCommand('Page.enable')

@@ -5,6 +5,16 @@ export const channels = {
   setWaveMode: 'recommendations:set-mode',
   getWavePulse: 'appearance:get-wave-pulse',
   setWavePulse: 'appearance:set-wave-pulse',
+  setTheme: 'appearance:set-theme',
+  getInterfaceScale: 'appearance:get-interface-scale',
+  setInterfaceScale: 'appearance:set-interface-scale',
+  getSoundEffect: 'playback:get-sound-effect',
+  setSoundEffect: 'playback:set-sound-effect',
+  setReverb: 'playback:set-reverb',
+  getDiscoMode: 'appearance:get-disco-mode',
+  setDiscoMode: 'appearance:set-disco-mode',
+  publishDiscoBeat: 'mini:publish-disco-beat',
+  discoBeat: 'mini:disco-beat',
   getPlaylists: 'playlists:get',
   createPlaylist: 'playlists:create',
   renamePlaylist: 'playlists:rename',
@@ -38,7 +48,27 @@ export const channels = {
   setShortcutCapture: 'shortcuts:set-capture',
 } as const
 
-export const playerOrigin = 'music-player://app'
+export const playerScheme = 'mustplay'
+export const playerOrigin = `${playerScheme}://app`
+export type Theme = 'dark' | 'light'
+export const themeBackground = { dark: '#15131a', light: '#f8f6fc' } satisfies Record<Theme, string>
+export const interfaceScales = [80, 90, 100, 110, 125, 150] as const
+export type InterfaceScale = typeof interfaceScales[number]
+export const defaultInterfaceScale = 100
+export const soundEffects = ['original', 'speed-up', 'slowed'] as const
+export type SoundEffect = typeof soundEffects[number]
+export const soundEffectRates = { original: 1, 'speed-up': 1.25, slowed: 0.8 } satisfies Record<SoundEffect, number>
+export interface SoundSettings {
+  effect: SoundEffect
+  reverb: Record<SoundEffect, boolean>
+}
+export const defaultSoundSettings: SoundSettings = {
+  effect: 'original', reverb: { original: false, 'speed-up': false, slowed: false },
+}
+
+export function isSoundEffect(value: unknown): value is SoundEffect {
+  return soundEffects.includes(value as SoundEffect)
+}
 
 export interface Track {
   id: string
@@ -147,6 +177,8 @@ export type PlaybackCommand =
   | { type: ShortcutAction }
   | { type: 'seek'; entryId: string; seconds: number }
   | { type: 'volume'; level: number }
+  | { type: 'sound-effect'; effect: SoundEffect }
+  | { type: 'reverb'; effect: SoundEffect; enabled: boolean }
 
 export interface MiniPlayback {
   track: { title: string; artist: string | null; artworkUrl: string | null } | null
@@ -159,6 +191,9 @@ export interface MiniPlayback {
   position: number
   seekable: boolean
   volume: VolumePreference | null
+  sound: SoundSettings | null
+  savingSound: boolean
+  soundError: string
 }
 
 export interface MiniState {
@@ -169,6 +204,7 @@ export interface MiniState {
 export interface MiniPlayerApi {
   getState(): Promise<MiniState>
   onState(callback: (state: MiniState) => void): () => void
+  onDiscoBeat(callback: (strength: number) => void): () => void
   control(command: PlaybackCommand): Promise<void>
   setPinned(pinned: boolean): Promise<void>
   showMain(): Promise<void>
@@ -220,13 +256,22 @@ export interface PlaybackEvent extends PlaybackEventInput { timestamp: string }
 export interface ListeningData { preferences: TrackPreference[]; events: PlaybackEvent[] }
 export interface ListeningDataReader { getListeningData(): ListeningData }
 
-export interface MusicPlayerApi {
+export interface MustplayApi {
   getWaveQueue(): Promise<string[]>
   getWaveRecommendations(): Promise<WaveRecommendations>
   getWaveMode(): Promise<WaveMode>
   setWaveMode(mode: WaveMode): Promise<void>
   getWavePulse(): Promise<number>
   setWavePulse(intensity: number): Promise<void>
+  setTheme(theme: Theme): Promise<void>
+  getInterfaceScale(): Promise<InterfaceScale>
+  setInterfaceScale(scale: InterfaceScale): Promise<void>
+  getSoundEffect(): Promise<SoundSettings>
+  setSoundEffect(effect: SoundEffect): Promise<void>
+  setReverb(effect: SoundEffect, enabled: boolean): Promise<void>
+  getDiscoMode(): Promise<boolean>
+  setDiscoMode(enabled: boolean): Promise<void>
+  publishDiscoBeat(strength: number): Promise<void>
   getPlaylists(): Promise<Playlist[]>
   createPlaylist(name: string): Promise<Playlist>
   renamePlaylist(id: string, name: string): Promise<void>

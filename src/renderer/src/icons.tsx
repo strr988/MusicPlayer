@@ -1,3 +1,4 @@
+import { useRef } from 'react'
 import type { ComponentProps, ReactNode } from 'react'
 
 const drawings = {
@@ -7,6 +8,9 @@ const drawings = {
   playlists: <path d="M3 5h17M3 10h17M3 15h9m4-1 5 3-5 3z" />,
   lyrics: <path d="M5 4h14v13H9l-4 3zm4 5h6m-6 4h4" />,
   settings: <path d="M4 6h16M8 3v6m-4 3h16m-5-3v6M4 18h16M10 15v6" />,
+  effects: <path d="M4 10v4m4-7v10m4-13v16m4-12v8m4-6v4" />,
+  sun: <><circle cx="12" cy="12" r="4" /><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5" /></>,
+  moon: <path d="M20.9 13.2A9 9 0 0 1 10.8 3.1 9 9 0 1 0 20.9 13.2Z" />,
   pin: <path d="M9 4h6l-1 6 4 4H6l4-4zm3 10v7" />,
   expand: <path d="M14 4h6v6m0-6-7 7M10 20H4v-6m0 6 7-7" />,
   collapse: <path d="m6 9 6 6 6-6" />,
@@ -37,6 +41,23 @@ const drawings = {
 
 export type IconName = keyof typeof drawings
 
+export function LikeButton({ onClick, ...props }: Omit<ComponentProps<typeof IconButton>, 'icon'>) {
+  const pulse = useRef<HTMLSpanElement>(null)
+  return <IconButton {...props} icon="heart" decoration={<span ref={pulse} className="like-burst" aria-hidden="true" />}
+    onClick={event => {
+      onClick?.(event)
+      if (props['aria-pressed'] !== false || matchMedia('(prefers-reduced-motion: reduce)').matches) return
+      event.currentTarget.querySelector('svg')?.animate(
+        [{ transform: 'scale(.8)' }, { transform: 'scale(1.42)', offset: .38 }, { transform: 'scale(.94)', offset: .75 }, { transform: 'scale(1)' }],
+        { duration: 420, easing: 'ease-out' },
+      )
+      pulse.current?.animate(
+        [{ opacity: .85, transform: 'scale(.4)' }, { opacity: 0, transform: 'scale(1.65)' }],
+        { duration: 520, easing: 'ease-out' },
+      )
+    }} />
+}
+
 export function Icon({ name }: { name: IconName }) {
   return <svg className="icon" data-icon={name} aria-hidden="true" viewBox="0 0 24 24" width="20" height="20"
     fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
@@ -44,10 +65,11 @@ export function Icon({ name }: { name: IconName }) {
   </svg>
 }
 
-export function IconButton({ icon, label, title = label, className, ...props }: ComponentProps<'button'> & {
+export function IconButton({ icon, label, title = label, className, decoration, ...props }: ComponentProps<'button'> & {
   icon: IconName
   label: string
+  decoration?: ReactNode
 }) {
   return <button type="button" className={className ? 'icon-button ' + className : 'icon-button'}
-    aria-label={label} title={title} {...props}><Icon name={icon} /></button>
+    aria-label={label} title={title} {...props}>{decoration}<Icon name={icon} /></button>
 }

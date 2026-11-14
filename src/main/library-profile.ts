@@ -13,6 +13,11 @@ function exists(path: string): boolean {
   return statSync(path, { throwIfNoEntry: false }) !== undefined
 }
 
+export function resolveProfileDirectory(current: string, legacy: string): string {
+  const hasLibrary = (directory: string) => ['library.sqlite3', localLibraryFile].some(file => exists(join(directory, file)))
+  return hasLibrary(legacy) && !hasLibrary(current) ? legacy : current
+}
+
 function isExperimentalLibrary(path: string): boolean {
   using db = new DatabaseSync(path, { readOnly: true })
   const { user_version: version } = db.prepare('PRAGMA user_version').get()!
