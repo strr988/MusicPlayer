@@ -20,13 +20,13 @@
 
 ## Скриншоты
 
-![Библиотека mustplay 0.7.0 в тёмной теме](docs/screenshots/0.7.0-library.png)
+![Библиотека mustplay 0.8.0](docs/screenshots/0.8.0-library.png)
 
-Скриншоты сделаны на синтетических треках. [Светлая тема и текст песни](docs/screenshots/0.7.0-light.png) · [Полноэкранный регулятор громкости](docs/screenshots/0.7.0-fullscreen-volume.png) · [Звуковые эффекты в мини-плеере](docs/screenshots/0.7.0-mini-effects.png) · [Диско-режим](docs/screenshots/0.7.0-disco.png) · [«Моя волна»](docs/screenshots/0.7.0-wave.png) · [Очередь](docs/screenshots/0.7.0-queue.png) · [Плейлисты](docs/screenshots/0.7.0-playlists.png).
+Скриншоты сделаны на синтетических треках. [Текстомузыка](docs/screenshots/0.8.0-lyrics.png) · [Полноэкранный плеер](docs/screenshots/0.8.0-fullscreen.png) · [Диско-режим](docs/screenshots/0.8.0-disco.png) · [Моя волна](docs/screenshots/0.8.0-wave.png) · [Очередь](docs/screenshots/0.8.0-queue.png) · [Плейлисты](docs/screenshots/0.8.0-playlists.png).
 
 ## Сборка 0.8.0
 
-Переносимый архив для Windows x64 можно собрать локально. [Инструкция по Windows-сборке](docs/WINDOWS_RELEASE.md).
+[Релиз mustplay v0.8.0](https://github.com/strr988/mustplay/releases/tag/v0.8.0) содержит список изменений и архивы исходного кода. Переносимый архив для Windows x64 можно собрать локально. [Инструкция по Windows-сборке](docs/WINDOWS_RELEASE.md).
 
 ## Разработка
 
