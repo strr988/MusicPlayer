@@ -27,7 +27,7 @@ export function Artwork({ url, eager = false, onLoad }: {
     <span className="artwork" aria-hidden="true" ref={url && !failed && !eager ? observe : undefined}>
       <Icon name="music" />
       {url && !failed && (eager || visible) && (
-        <img src={url} alt="" decoding="async" onLoad={onLoad && (event => onLoad(event.currentTarget))}
+        <img src={url} alt="" decoding="async" draggable={false} onLoad={onLoad && (event => onLoad(event.currentTarget))}
           onError={() => setFailed(true)} />
       )}
     </span>

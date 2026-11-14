@@ -10,6 +10,7 @@ import { Timeline } from './timeline'
 import { SoundMenu } from './sound-menu'
 import { SleepPanel } from './sleep-menu'
 import type { useDiscoMode } from './disco'
+import { VolumeControl } from './volume-control'
 
 function coverTint(image: HTMLImageElement): string | undefined {
   const canvas = document.createElement('canvas')
@@ -51,13 +52,18 @@ export function FullPlayer({ dialog, open, ...controls }: FullPlayerControls & {
   open: boolean
 }) {
   return <dialog ref={dialog} className="full-player" aria-label="Полноэкранный плеер"
-    onCancel={event => { event.preventDefault(); controls.close() }}>
+    onCancel={event => {
+      event.preventDefault()
+      controls.close()
+    }}>
     {open && <FullPlayerContent {...controls} />}
   </dialog>
 }
 
 function FullPlayerContent({ playback, hasTracks, liked, likeDisabled, toggleLike, close, openMini, discoLayer, disco }: FullPlayerControls) {
-  const [side, setSide] = useState<'lyrics' | 'queue' | null>(null)
+  const [lyricsOpen, setLyricsOpen] = useState(false)
+  const [queueOpen, setQueueOpen] = useState(false)
+  const side = queueOpen ? 'queue' : lyricsOpen ? 'lyrics' : null
   const [tint, setTint] = useState<{ url: string; color: string }>()
   const queueButton = useRef<HTMLButtonElement>(null)
   const queueClose = useRef<HTMLButtonElement>(null)
@@ -65,21 +71,25 @@ function FullPlayerContent({ playback, hasTracks, liked, likeDisabled, toggleLik
   const more = useRef<HTMLDivElement>(null)
   const [moreOpen, setMoreOpen] = useState(false)
   const { track, loading, playing, volume } = playback
-  const level = Math.round((volume?.level ?? 1) * 100)
   const url = track?.artworkUrl
   useLayoutEffect(() => { exit.current?.focus() }, [])
   useLayoutEffect(() => {
-    if (side === 'queue') queueClose.current?.focus()
-  }, [side])
+    if (queueOpen) queueClose.current?.focus()
+  }, [queueOpen])
 
   function closeQueue() {
-    setSide(null)
+    setQueueOpen(false)
     queueButton.current?.focus()
   }
 
   return <>
     <div className="full-player-stage" data-side={side ?? undefined}
-      style={{ '--cover-tint': tint?.url === url ? tint?.color : undefined } as CSSProperties}>
+      style={{ '--cover-tint': tint?.url === url ? tint?.color : undefined } as CSSProperties}
+      onKeyDown={event => {
+        if (!queueOpen || event.key !== 'Escape' || event.defaultPrevented) return
+        event.preventDefault()
+        closeQueue()
+      }}>
       {discoLayer}
       <IconButton ref={exit} icon="collapse" label="Свернуть полноэкранный плеер" className="full-player-exit" onClick={close} />
       <div className="full-player-center">
@@ -89,25 +99,20 @@ function FullPlayerContent({ playback, hasTracks, liked, likeDisabled, toggleLik
             if (url && color) setTint({ url, color })
           }} />
           <div className="full-cover-controls">
-            <div className="full-volume">
-              <IconButton icon={volume?.muted ? 'mute' : 'volume'} label="Без звука"
-                title={volume?.muted ? 'Включить звук' : 'Отключить звук'}
-                aria-pressed={volume?.muted ?? false} disabled={!volume} onClick={playback.toggleMute} />
-              <div className="full-volume-slider">
-                <input aria-label="Громкость" type="range" min={0} max={100} value={level} disabled={!volume}
-                  aria-valuetext={level + '%'} onChange={event => playback.setVolumeLevel(event.currentTarget.valueAsNumber / 100)} />
-              </div>
-            </div>
+            <VolumeControl fullscreen volume={volume} toggleMute={playback.toggleMute} setVolumeLevel={playback.setVolumeLevel} />
             <IconButton ref={queueButton} icon="queue" label="Очередь" className="full-queue-button"
-              aria-expanded={side === 'queue'} aria-controls="full-playback-queue"
-              onClick={() => side === 'queue' ? closeQueue() : setSide('queue')} />
+              aria-expanded={queueOpen} aria-controls="full-playback-queue"
+              onClick={() => queueOpen ? closeQueue() : setQueueOpen(true)} />
             <SoundMenu className="full-sound-button" sound={playback.sound} saving={playback.savingSoundEffect}
               error={playback.soundEffectError} changeEffect={playback.changeSoundEffect} changeReverb={playback.changeReverb} />
             <TransportControls playback={playback} hasTracks={hasTracks} />
             <div className="full-cover-actions">
               <IconButton icon="more" label="Дополнительно" popoverTarget="full-player-menu" aria-controls="full-player-menu" />
               <IconButton icon="lyrics" label="Текстомузыка" aria-pressed={side === 'lyrics'}
-                onClick={() => setSide(side === 'lyrics' ? null : 'lyrics')} />
+                onClick={() => {
+                  setLyricsOpen(side !== 'lyrics')
+                  setQueueOpen(false)
+                }} />
               <LikeButton label="Лайк текущему треку" aria-pressed={liked} disabled={!track || likeDisabled}
                 onClick={toggleLike} />
             </div>
@@ -121,17 +126,19 @@ function FullPlayerContent({ playback, hasTracks, liked, likeDisabled, toggleLik
           trackDuration={track?.durationSeconds ?? null} restoredPosition={playback.restoredPosition} seek={playback.seek} />
         {playback.error && <p className="muted" role="alert">{playback.error}</p>}
       </div>
-      {side === 'lyrics' && <div className="full-player-side">
-        <LyricsPanel key={JSON.stringify([track?.id, url, track?.available])} track={track} active compact
+      {lyricsOpen && <div className="full-player-side" hidden={queueOpen}>
+        <LyricsPanel key={JSON.stringify([track?.id, url, track?.available])} track={track} active={!queueOpen} compact
           audio={playback.audioProps.ref} canSeek={playback.duration !== null && !loading} seek={playback.seek}
           mode="sync" />
       </div>}
-      {side === 'queue' && <div className="full-player-side">
+      {queueOpen && <div className="full-player-side">
         <QueuePanel id="full-playback-queue" playback={playback} open close={closeQueue} closeButton={queueClose} />
       </div>}
     </div>
     <div ref={more} id="full-player-menu" className="sound-menu full-player-menu" popover="auto"
-      onToggle={event => setMoreOpen(event.newState === 'open')}>
+      onToggle={event => {
+        if (event.target === event.currentTarget) setMoreOpen(event.newState === 'open')
+      }}>
       {moreOpen && <>
         <SleepPanel playback={playback} />
         <label className="sound-control disco-setting">

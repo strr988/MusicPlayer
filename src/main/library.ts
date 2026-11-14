@@ -352,7 +352,7 @@ export class Library implements ListeningDataReader {
     const container = tags.format.container?.toLowerCase()
     if (!container) throw new Error('Unrecognized audio')
     if (format === 'm4a' && tags.format.codec === 'ALAC') throw new UnsupportedCodec('Apple Lossless (ALAC)')
-    if (!matchesAudioFormat(format, container, tags.format.codec ?? '')) {
+    if (!matchesAudioFormat(format, container, tags.format)) {
       throw new FormatMismatch('Audio format does not match the file extension')
     }
     if (await realpath(path) !== path || !sameFile(identity, await lstat(path, { bigint: true }))) {

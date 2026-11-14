@@ -228,9 +228,12 @@ export async function verifyInterface({ player, run, click, waitFor, waitForAudi
       const repeat = '.repeat-control'
       await mouseClick(repeat)
       await waitFor('document.querySelector(".repeat-control").dataset.repeat === "all"', 'repeat all by mouse')
+      assert.equal(await run('getComputedStyle(document.querySelector(".repeat-control")).outlineStyle'), 'none')
+      const activeBackground = await run('getComputedStyle(document.querySelector(".repeat-control")).backgroundColor')
       await focus(repeat)
       key('Enter')
       await waitFor('document.querySelector(".repeat-control span")?.textContent === "1"', 'repeat one by keyboard')
+      assert.equal(await run('getComputedStyle(document.querySelector(".repeat-control")).backgroundColor'), activeBackground)
       key('Enter')
       await waitFor('document.querySelector(".repeat-control").dataset.repeat === "off"', 'repeat returns to off')
     } else if (width === 620) {

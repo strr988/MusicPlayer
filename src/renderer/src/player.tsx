@@ -5,6 +5,7 @@ import type { usePlayback } from './playback'
 import { Timeline } from './timeline'
 import { SoundMenu } from './sound-menu'
 import { SleepMenu } from './sleep-menu'
+import { VolumeControl } from './volume-control'
 import type { RefObject } from 'react'
 
 const repeatLabels: Record<RepeatMode, string> = {
@@ -29,7 +30,6 @@ export function Player({ playback, hasTracks, liked, likeDisabled, toggleLike, q
   fullPlayerButton: RefObject<HTMLButtonElement | null>
 }) {
   const { track, volume, queue, loading, mode, playlistName, waveNotice } = playback
-  const level = Math.round((volume?.level ?? 1) * 100)
   const context = mode === 'wave' ? waveNotice || (loading ? 'Подбираем трек…' : 'Режим «Моя волна»')
     : loading ? 'Открываем трек…' : playlistName ? 'Плейлист «' + playlistName + '»' : ''
 
@@ -61,14 +61,7 @@ export function Player({ playback, hasTracks, liked, likeDisabled, toggleLike, q
         changeEffect={playback.changeSoundEffect} changeReverb={playback.changeReverb} />
       <IconButton ref={textMusicButton} icon="lyrics" label="Текстомузыка" aria-pressed={textMusicOpen}
         aria-controls="song-lyrics" disabled={!track && !textMusicOpen} onClick={toggleTextMusic} />
-      <div className="volume">
-        <IconButton icon={volume?.muted ? 'mute' : 'volume'} label="Без звука" aria-pressed={volume?.muted ?? false}
-          title={volume?.muted ? 'Включить звук' : 'Отключить звук'} disabled={!volume}
-          onClick={() => volume && playback.changeVolume({ ...volume, muted: !volume.muted })} />
-        <input aria-label="Громкость" type="range" min={0} max={100} step={1} value={level} disabled={!volume}
-          aria-valuetext={level + '%'} title={level + '%'}
-          onChange={event => volume && playback.changeVolume({ ...volume, level: event.currentTarget.valueAsNumber / 100 })} />
-      </div>
+      <VolumeControl volume={volume} toggleMute={playback.toggleMute} setVolumeLevel={playback.setVolumeLevel} />
       <button type="button" className="queue-toggle secondary" ref={queueButton} aria-expanded={queueOpen}
         aria-controls="playback-queue" aria-label={'Очередь (' + queue.pending.length + ')'}
         title={queueOpen ? 'Закрыть очередь' : 'Открыть очередь'} onClick={toggleQueue}>
@@ -93,7 +86,8 @@ export function TransportControls({ playback, hasTracks }: {
       disabled={!hasTracks || loading || !ready} onClick={playback.toggle} />
     <IconButton icon="next" label="Следующий трек" disabled={!playback.canGoNext || !ready} onClick={() => playback.step(1)} />
     <IconButton icon="repeat" className="repeat-control" label="Режим повтора" title={repeatLabel}
-      aria-description={repeatLabel} data-repeat={queue.repeat} disabled={!ready} onClick={playback.cycleRepeat}
+      aria-description={repeatLabel} data-repeat={queue.repeat} data-active={queue.repeat !== 'off' || undefined}
+      disabled={!ready} onClick={playback.cycleRepeat}
       decoration={queue.repeat === 'one' ? <span aria-hidden="true">1</span> : undefined} />
   </div>
 }

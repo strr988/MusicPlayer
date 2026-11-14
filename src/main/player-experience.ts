@@ -166,7 +166,7 @@ export function registerPlayerExperience(
     const [strength] = args
     if (args.length !== 1 || !numeric(strength, 1)) throw new Error('Invalid disco beat')
     const now = performance.now()
-    if (!mini || now - lastDiscoBeat < 100) return
+    if (!mini || (strength > 0 && now - lastDiscoBeat < 100)) return
     lastDiscoBeat = now
     mini.webContents.send(channels.discoBeat, strength)
   })

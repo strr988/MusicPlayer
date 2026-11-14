@@ -6,20 +6,22 @@ export function DiscoLayer({ ref }: { ref: Ref<HTMLDivElement> }) {
   return <div className="disco-layer" ref={ref} aria-hidden="true"><i /><i /><i /></div>
 }
 
-export function pulseDisco(layer: HTMLDivElement | null, strength: number): void {
-  if (!layer || !strength || matchMedia('(prefers-reduced-motion: reduce)').matches) return
-  for (const [index, wave] of Array.from(layer.children).entries()) {
-    wave.getAnimations().forEach(animation => animation.cancel())
-    wave.animate([
-      { opacity: 0, transform: 'scale(.65)' },
-      { opacity: strength * (index === 1 ? 0.45 : 0.62), offset: 0.24 },
-      { opacity: 0, transform: 'scale(1.65)' },
-    ], { duration: 780 + index * 110, easing: 'cubic-bezier(.15,.55,.3,1)' })
-  }
+export function paintDisco(layer: HTMLDivElement | null, strength: number): void {
+  if (!layer) return
+  layer.style.setProperty('--disco-strength', strength.toFixed(3))
+  layer.toggleAttribute('data-moving', strength > 0)
+}
+
+function bandLevel(spectrum: Float32Array, binHz: number, low: number, high: number): number {
+  const start = Math.max(1, Math.ceil(low / binHz))
+  const end = Math.min(spectrum.length, Math.ceil(high / binHz))
+  let peak = -Infinity
+  for (let bin = start; bin < end; bin++) peak = Math.max(peak, spectrum[bin])
+  return Math.max(0, Math.min(1, (peak + 72) / 49))
 }
 
 export function useDiscoMode(effects: { readonly current: AudioEffects | null }, active: boolean,
-  onBeat: (strength: number) => void) {
+  onLevel: (strength: number) => void) {
   const [enabled, setEnabled] = useState<boolean | null>(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -44,35 +46,42 @@ export function useDiscoMode(effects: { readonly current: AudioEffects | null },
     }
   }
 
-  const beat = useEffectEvent(onBeat)
+  const showLevel = useEffectEvent(onLevel)
   useEffect(() => {
     const analyser = effects.current?.analyser
     if (!enabled || !active || !analyser) return
     const motion = matchMedia('(prefers-reduced-motion: reduce)')
     const spectrum = new Float32Array(analyser.frequencyBinCount)
     const binHz = analyser.context.sampleRate / analyser.fftSize
-    const start = Math.max(1, Math.ceil(35 / binHz))
-    const end = Math.floor(175 / binHz)
-    let average = 0
-    let previous = 0
-    let lastBeat = -Infinity
-    let previousSample = performance.now()
+    let bassAverage = 0
+    let accent = 0
+    let envelope = 0
+    let lastPaint = -Infinity
+    const reset = () => {
+      bassAverage = accent = envelope = 0
+      showLevel(0)
+    }
+    motion.addEventListener('change', reset)
     const timer = window.setInterval(() => {
       if (motion.matches) return
       const now = performance.now()
       analyser.getFloatFrequencyData(spectrum)
-      let energy = 0
-      for (let bin = start; bin <= end; bin++) energy = Math.max(energy, Math.min(1, 10 ** (spectrum[bin] / 35)))
-      if (now - previousSample > 160) average = previous = 0
-      previousSample = now
-      if (now - lastBeat >= 230 && energy > Math.max(0.018, average * 1.35) && energy - previous > 0.009) {
-        lastBeat = now
-        beat(Math.min(1, 0.38 + energy * 2.8))
+      const bass = bandLevel(spectrum, binHz, 35, 190)
+      const presence = bandLevel(spectrum, binHz, 190, 2800)
+      accent = Math.max(accent * 0.9, Math.max(0, bass - bassAverage - 0.06))
+      bassAverage += (bass - bassAverage) * 0.1
+      const target = Math.min(1, bass * 0.47 + presence * 0.26 + accent * 0.72)
+      envelope += (target - envelope) * (target > envelope ? 0.42 : 0.13)
+      if (now - lastPaint >= 115) {
+        lastPaint = now
+        showLevel(envelope < 0.015 ? 0 : envelope)
       }
-      average += (energy - average) * 0.13
-      previous = energy
-    }, 32)
-    return () => clearInterval(timer)
+    }, 30)
+    return () => {
+      clearInterval(timer)
+      motion.removeEventListener('change', reset)
+      reset()
+    }
   }, [effects, enabled, active])
 
   return { enabled, saving, error, change }

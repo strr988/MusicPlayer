@@ -38,7 +38,7 @@ async function prepareElectron(t, { withArtwork = false, withCatalog = false } =
 
   const entry = fileURLToPath(new URL('./run-electron-smoke.mjs', import.meta.url))
   const profile = join(directory, 'profile')
-  const run = (phase) => promisify(execFile)(executable, [entry, fixtures, profile, phase], { timeout: 35_000 })
+  const run = (phase, input = fixtures) => promisify(execFile)(executable, [entry, input, profile, phase], { timeout: 35_000 })
   return { fixtures, run }
 }
 
@@ -50,13 +50,19 @@ test('built Electron app imports, plays and restores its library across restarts
   assert.deepEqual(await readFile(join(fixtures, '01.mp3')), originalMp3)
 })
 
-test('built app decodes AAC, M4A, PCM WAV, Vorbis, Opus and WebM via the local protocol', { timeout: 40_000 }, async t => {
+test('built app decodes AAC, M4A with AAC or FLAC, PCM WAV, Vorbis, Opus and WebM', { timeout: 40_000 }, async t => {
   const { fixtures, run } = await prepareElectron(t)
-  for (const name of ['aac', 'm4a', 'wav', 'ogg', 'opus', 'webm', 'alac.m4a']) {
+  for (const name of ['aac', 'm4a', 'wav', 'ogg', 'opus', 'webm', 'alac.m4a', 'flac.m4a']) {
     const target = name === 'alac.m4a' ? 'lossless-apple.m4a' : 'extra.' + name
     await copyFile(new URL('./fixtures/formats/tone.' + name, import.meta.url), join(fixtures, target))
   }
   await run('audio-formats')
+})
+
+const localM4a = process.env.MUSTPLAY_TEST_M4A_PATH
+test('original Smells Like Teen Spirit M4A imports, plays and seeks in Electron', { skip: !localM4a, timeout: 40_000 }, async t => {
+  const { run } = await prepareElectron(t)
+  await run('local-flac-in-m4a', localM4a)
 })
 
 test('excluding a music folder revokes its playback while preserving overlapping folders', { timeout: 40_000 }, async t => {

@@ -18,6 +18,7 @@ const drawings = {
   more: <><circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /></>,
   mini: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M12 12h6v4h-6z" /></>,
   folder: <path d="M3 19h18V7h-9L9 4H3zM12 10v6m-3-3h6" />,
+  folders: <path d="M3 19h14V8h-7L8 6H3zM7 3h8l2 2h4v11" />,
   refresh: <path d="M20 4v5h-5M4 20v-5h5m11-6a8 8 0 0 0-13-3m-3 9a8 8 0 0 0 13 3" />,
   search: <><circle cx="10.5" cy="10.5" r="6" /><path d="m15 15 5 5" /></>,
   up: <path d="M12 20V4m-6 6 6-6 6 6" />,

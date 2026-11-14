@@ -4,7 +4,7 @@ import { useCursor } from './cursor'
 import { Artwork } from './artwork'
 import { Icon, IconButton } from './icons'
 import { formatTime } from './playback'
-import { DiscoLayer, pulseDisco } from './disco'
+import { DiscoLayer, paintDisco } from './disco'
 import { SoundMenu } from './sound-menu'
 import { WindowTitle } from './window-title'
 
@@ -13,7 +13,7 @@ export function MiniPlayer({ api }: { api: MiniPlayerApi }) {
   useCursor(state?.cursor)
   const [error, setError] = useState('')
   const disco = useRef<HTMLDivElement>(null)
-  useEffect(() => api.onDiscoBeat(strength => pulseDisco(disco.current, strength)), [api])
+  useEffect(() => api.onDiscoBeat(strength => paintDisco(disco.current, strength)), [api])
   useEffect(() => {
     let waiting = true
     const unsubscribe = api.onState(next => {

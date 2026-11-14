@@ -365,6 +365,13 @@ async function verifyFullPlayer({ player, run, click, waitFor, waitForAudio, mp3
     player.webContents.sendInputEvent({ type: 'mouseMove', ...await point(selector) })
   }
 
+  const mainVolume = 'document.querySelector(".player-volume input")'
+  if (v8) {
+    assert.equal(await run(`getComputedStyle(${mainVolume}.parentElement).visibility`), 'hidden')
+    await hover('document.querySelector(".player-volume button")')
+    await waitFor(`getComputedStyle(${mainVolume}.parentElement).opacity === "1"`, 'hover reveals main volume')
+    assert.equal(await run(`getComputedStyle(${mainVolume}).writingMode`), 'vertical-lr')
+  }
   await hover(opener)
   await waitFor('getComputedStyle(document.querySelector(".player-cover-expand")).opacity === "1"', 'cover exposes fullscreen on hover')
   await click('На весь экран')
@@ -379,7 +386,7 @@ async function verifyFullPlayer({ player, run, click, waitFor, waitForAudio, mp3
   }
   await hover(cover)
   await waitFor(`getComputedStyle(${cover}.querySelector(".full-cover-controls")).opacity === "1"`, 'hover reveals full cover controls')
-  const fullVolume = modal + '.querySelector(".full-volume-slider input")'
+  const fullVolume = modal + '.querySelector(".full-volume input")'
   await hover(modal + '.querySelector(".full-volume > button")')
   await waitFor(`getComputedStyle(${fullVolume}.parentElement).opacity === "1"`, 'hover reveals fullscreen volume')
   await run(`(() => {
@@ -395,6 +402,21 @@ async function verifyFullPlayer({ player, run, click, waitFor, waitForAudio, mp3
     input.dispatchEvent(new Event('input', { bubbles: true }))
   })()`)
   await waitForAudio('audio.volume === 1', 'fullscreen volume can return to 100%')
+  if (v8) {
+    const sliderPoint = await point(fullVolume)
+    player.webContents.sendInputEvent({ type: 'mouseMove', ...sliderPoint })
+    player.webContents.sendInputEvent({ type: 'mouseDown', ...sliderPoint, button: 'left', clickCount: 1 })
+    player.webContents.sendInputEvent({ type: 'mouseUp', ...sliderPoint, button: 'left', clickCount: 1 })
+    await waitFor(`document.activeElement === ${fullVolume}`, 'volume slider has pointer focus')
+    await hover(control('Свернуть полноэкранный плеер'))
+    await waitFor(`getComputedStyle(${fullVolume}.parentElement).visibility === "hidden"`, 'pointer exit hides adjusted volume')
+    await run(`(() => {
+      const input = ${fullVolume}
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '100')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })()`)
+    await waitForAudio('audio.volume === 1', 'restore volume after pointer test')
+  }
   await press('Звуковые эффекты')
   await waitFor(`!!${modal}.querySelector(".sound-menu:popover-open")`, 'fullscreen opens sound presets')
   if (v8) {
@@ -404,10 +426,30 @@ async function verifyFullPlayer({ player, run, click, waitFor, waitForAudio, mp3
   if (v8) {
     await press('Дополнительно')
     await waitFor('!!document.querySelector("#full-player-menu .sleep-panel") && !!document.querySelector("#full-player-menu .disco-setting input")', 'fullscreen actions have timer and disco')
+    const timer = 'document.querySelector("#full-player-menu .sleep-panel summary")'
+    await run(timer + '.click()')
+    await waitFor('!!document.querySelector("#full-player-menu .sleep-controls")', 'timer expands in fullscreen menu')
+    await run(timer + '.click()')
+    await waitFor('!!document.querySelector("#full-player-menu:popover-open .disco-setting") && !document.querySelector("#full-player-menu .sleep-controls")', 'collapsing timer keeps fullscreen menu populated')
+    await run('document.querySelector("#full-player-menu .disco-setting input").click()')
     await run('document.querySelector("#full-player-menu").hidePopover()')
+    const glow = stage + '.querySelector(".disco-layer")'
+    await waitFor(`!!${glow}`, 'disco enabled from fullscreen menu')
+    const reducedMotion = await run('matchMedia("(prefers-reduced-motion: reduce)").matches')
+    if (reducedMotion) {
+      assert.equal(await run(`getComputedStyle(${glow}).display`), 'none')
+    } else {
+      await waitFor(`parseFloat(getComputedStyle(${glow}).opacity) > 0.025`, 'disco responds to playing audio')
+    }
+    if (screenshotFolder) {
+      await writeFile(join(screenshotFolder, 'disco-fullscreen.png'), (await player.webContents.capturePage()).toPNG())
+    }
   }
   await press('Пауза')
   await waitForAudio('audio === window.originalAudio && audio.paused', 'fullscreen pauses the same audio')
+  if (v8) {
+    await waitFor(`getComputedStyle(${stage}.querySelector('.disco-layer')).opacity === "0"`, 'disco fades on pause')
+  }
   await run(`(() => {
     const input = ${timeline}
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '0.8')
@@ -435,6 +477,13 @@ async function verifyFullPlayer({ player, run, click, waitFor, waitForAudio, mp3
   player.webContents.sendInputEvent({ type: 'mouseUp', ...lyricsPoint, button: 'left', clickCount: 1 })
   const lines = modal + '.querySelector(".lyrics-lines")'
   await waitFor(`${lines}?.querySelectorAll("button").length === 2`, 'fullscreen loads synchronized lyrics alongside the cover')
+  if (v8) {
+    assert.equal(await run(`getComputedStyle(${lines}.querySelector('button')).userSelect`), 'none')
+    await press('Очередь')
+    await waitFor(`${stage}.dataset.side === "queue" && !!${lines}.closest("[hidden]")`, 'queue temporarily hides synchronized lyrics')
+    await press('Закрыть очередь')
+    await waitFor(`${stage}.dataset.side === "lyrics" && !${lines}.closest("[hidden]")`, 'closing queue restores synchronized lyrics')
+  }
   await hover(control('Свернуть полноэкранный плеер'))
   const coverControls = `getComputedStyle(${cover}.querySelector(".full-cover-controls")).opacity`
   await waitFor(`${coverControls} === "0"`, 'cover controls disappear when the pointer leaves in text music')
@@ -474,7 +523,7 @@ async function verifyFullPlayer({ player, run, click, waitFor, waitForAudio, mp3
   await press('Свернуть полноэкранный плеер')
   await waitFor(`!${modal}.open && !document.fullscreenElement && document.activeElement === ${opener}`, 'collapse returns focus and exits fullscreen')
   await click('На весь экран')
-  await waitFor(`${modal}.open && document.fullscreenElement === document.documentElement && !${stage}.dataset.side`, 'fullscreen can reopen with a clean view')
+  await waitFor(`${modal}.open && document.fullscreenElement === document.documentElement && !!${stage} && !${stage}.dataset.side`, 'fullscreen can reopen with a clean view')
   player.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' })
   player.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' })
   await waitFor(`!${modal}.open && !document.fullscreenElement`, 'Escape exits fullscreen')

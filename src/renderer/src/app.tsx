@@ -4,7 +4,7 @@ import type { ImportIssue, MusicFolder, LibraryTrack, LyricsMode, Theme, TrackPr
 import { Icon } from './icons'
 import { useDesktopPlayback } from './desktop-playback'
 import { useCursorSettings } from './cursor'
-import { DiscoLayer, pulseDisco, useDiscoMode } from './disco'
+import { DiscoLayer, paintDisco, useDiscoMode } from './disco'
 import { FullPlayer } from './full-player'
 import { Library } from './library'
 import { LyricsPanel } from './lyrics-panel'
@@ -72,14 +72,17 @@ export function App({ initialTheme }: { initialTheme: Theme }) {
     setTracks(previous => previous.map(track => track.id === trackId ? { ...track, available: false } : track))
   })
   useMediaControls(playback)
-  const miniVisible = useDesktopPlayback(playback, tracks.length > 0)
+  const anyAvailable = useMemo(() => tracks.some(track => track.available), [tracks])
+  const canPlay = anyAvailable || !!playback.track && playback.playing
+  const miniVisible = useDesktopPlayback(playback, canPlay)
   const cursor = useCursorSettings()
   const discoLayer = useRef<HTMLDivElement>(null)
   const fullDiscoLayer = useRef<HTMLDivElement>(null)
   const disco = useDiscoMode(playback.audioEffects, playback.playing && !playback.loading &&
     !playback.volume?.muted && !!playback.volume?.level, strength => {
     if (miniVisible) void window.mustplay.publishDiscoBeat(strength).catch(() => {})
-    else pulseDisco(fullPlayerOpen ? fullDiscoLayer.current : discoLayer.current, strength)
+    paintDisco(discoLayer.current, !miniVisible && !fullPlayerOpen ? strength : 0)
+    paintDisco(fullDiscoLayer.current, !miniVisible && fullPlayerOpen ? strength : 0)
   })
 
   const [queueOpen, setQueueOpen] = useState(false)
@@ -94,7 +97,6 @@ export function App({ initialTheme }: { initialTheme: Theme }) {
   const [pendingLike, setPendingLike] = useState(false)
   const [preferencesReady, setPreferencesReady] = useState(false)
   const likedTrackIds = useMemo(() => new Set(preferences.filter(item => item.liked).map(item => item.trackId)), [preferences])
-  const anyAvailable = useMemo(() => tracks.some(track => track.available), [tracks])
 
   useEffect(() => {
     const query = window.matchMedia('(width < 1080px)')
@@ -181,7 +183,7 @@ export function App({ initialTheme }: { initialTheme: Theme }) {
     if (next !== section) content.current?.scrollTo(0, 0)
     setSection(next)
     if (queueOpen && compactQueue) setQueueOpen(false)
-    if (next === 'playlists') void refreshTracks()
+    if (next !== section && (next === 'library' || next === 'playlists')) void refreshTracks()
   }
 
   function toggleTextMusic() {
@@ -349,7 +351,7 @@ export function App({ initialTheme }: { initialTheme: Theme }) {
   const covered = queueOpen && compactQueue
   const likeDisabled = !preferencesReady
   const playerControls = {
-    playback, hasTracks: tracks.length > 0, liked: !!playback.track && likedTrackIds.has(playback.track.id),
+    playback, hasTracks: canPlay, liked: !!playback.track && likedTrackIds.has(playback.track.id),
     likeDisabled, toggleLike: () => { if (playback.track) void toggleLike(playback.track.id) },
   }
   return <div className="shell">

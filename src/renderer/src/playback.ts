@@ -476,7 +476,7 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
     } else if (state.pending.length || state.source.type === 'wave') {
       void navigate('next', { allowSame: true })
     } else {
-      start({ type: 'library' }, tracks.map(item => item.id), 0)
+      start({ type: 'library' }, tracks.filter(item => item.available).map(item => item.id), 0)
     }
   }
 
@@ -541,7 +541,10 @@ export function usePlayback(tracks: LibraryTrack[], markUnavailable: (trackId: s
     jump: (id: string) => {
       if (queueRef.current.pending.includes(id)) void navigate('jump', { id })
     },
-    select: (id: string) => start({ type: 'library' }, tracks.map(item => item.id), tracks.findIndex(item => item.id === id)),
+    select: (id: string) => {
+      const ids = tracks.filter(item => item.available).map(item => item.id)
+      start({ type: 'library' }, ids, ids.indexOf(id))
+    },
     startPlaylist: (playlist: Playlist) => start({ type: 'playlist', id: playlist.id, name: playlist.name }, playlist.trackIds.filter(id => tracksById.has(id)), 0),
     startWave: () => {
       if (queueRef.current.source.type === 'wave') void navigate('next', { allowSame: !!waveNotice })

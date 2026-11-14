@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useId, useMemo, useRef, useState } from 'react'
 import type { ImportIssue, LibraryTrack, MusicFolder } from '../../shared/contracts'
 import { Artwork } from './artwork'
 import { EmptyState } from './empty-state'
@@ -45,9 +45,12 @@ export function Library({ tracks, loading, loadFailed, retryLoad, scan, notice, 
   const [sortField, setSortField] = useState<SortField | ''>('')
   const [direction, setDirection] = useState<SortDirection>('asc')
   const [requestedPage, setPage] = useState(0)
-  const shown = useMemo(() => visibleTracks(tracks, query, sortField, direction), [tracks, query, sortField, direction])
+  const available = useMemo(() => tracks.filter(track => track.available), [tracks])
+  const shown = useMemo(() => visibleTracks(available, query, sortField, direction), [available, query, sortField, direction])
   const page = Math.min(requestedPage, Math.max(0, Math.ceil(shown.length / pageSize) - 1))
   const tableStart = useRef<HTMLDivElement>(null)
+  const folderMenuId = useId()
+  const folderMenuButton = useRef<HTMLButtonElement>(null)
   const actions = <div className="library-folder-actions">
     <button type="button" className="secondary" onClick={rescanLibrary} disabled={!!scan || loading}
       title="Перечитать импортированные папки">
@@ -56,6 +59,20 @@ export function Library({ tracks, loading, loadFailed, retryLoad, scan, notice, 
     <button type="button" className="primary" onClick={importFolder} disabled={!!scan || loading}>
       <Icon name="folder" />{scan === 'import' ? 'Импорт…' : 'Добавить папку'}
     </button>
+    <IconButton ref={folderMenuButton} icon="folders" className="secondary" label="Музыкальные папки"
+      popoverTarget={folderMenuId} aria-controls={folderMenuId} />
+    <section id={folderMenuId} className="sound-menu music-folders" popover="auto" aria-label="Музыкальные папки">
+      <h2>Музыкальные папки</h2>
+      {folderListError && <button type="button" className="secondary" onClick={retryFolders}>Обновить список папок</button>}
+      {folders.length > 0 ? <ul>{folders.map(folder => <li key={folder.id}>
+        <span>{folder.label}</span>
+        <button type="button" className="secondary" disabled={!!scan || loading || !ready}
+          aria-label={'Исключить папку ' + folder.label} onClick={() => {
+            folderMenuButton.current?.focus()
+            removeFolder(folder.id)
+          }}>Исключить</button>
+      </li>)}</ul> : !folderListError && <p className="muted">Подключённых папок пока нет.</p>}
+    </section>
   </div>
   const sortState = (field: SortField) => sortField === field ? (direction === 'asc' ? 'ascending' : 'descending') : undefined
 
@@ -63,22 +80,12 @@ export function Library({ tracks, loading, loadFailed, retryLoad, scan, notice, 
     <header className="section-heading library-heading">
       <div>
         <h1>Библиотека</h1>
-        {tracks.length > 0 && <p className="muted" role="status">
-          Треков: {shown.length}{query.trim() && ' из ' + tracks.length}
+        {available.length > 0 && <p className="muted" role="status">
+          Треков: {shown.length}{query.trim() && ' из ' + available.length}
         </p>}
       </div>
-      {tracks.length > 0 && actions}
+      {actions}
     </header>
-    {(folders.length > 0 || folderListError) && <details className="music-folders">
-      <summary>Музыкальные папки ({folders.length})</summary>
-      {folderListError && <button type="button" className="secondary" onClick={retryFolders}>Обновить список папок</button>}
-      <ul>{folders.map(folder => <li key={folder.id}>
-        <span>{folder.label}</span>
-        <button type="button" className="secondary" disabled={!!scan || loading || !ready}
-          aria-label={`Исключить папку ${folder.label}`} onClick={() => removeFolder(folder.id)}>Исключить</button>
-      </li>)}</ul>
-      <p className="muted">Исключение папки убирает её треки из библиотеки. Файлы остаются на диске.</p>
-    </details>}
     {scan && <p className="notice" role="status">{scan === 'rescan' ? 'Перечитываем импортированные папки…' : scan === 'remove' ? 'Исключаем папку…' : 'Читаем папку…'}</p>}
     {!scan && notice && <p className={notice.processed ? 'sr-only' : 'notice'} role="status">{notice.text}</p>}
     {!scan && issues.length > 0 && <details className="import-result">
@@ -91,8 +98,10 @@ export function Library({ tracks, loading, loadFailed, retryLoad, scan, notice, 
     {loading ? <p className="notice" role="status">Загружаем библиотеку…</p> :
       loadFailed ? <EmptyState icon="library" title="Не удалось открыть библиотеку"
         action={<button type="button" className="primary" onClick={retryLoad}>Повторить загрузку</button>} /> :
-      tracks.length === 0 ? <EmptyState icon="music" title="Здесь появится ваша музыка" action={actions}>
-        Добавьте папку с файлами MP3, AAC, M4A, FLAC, WAV, Ogg, Opus или WebM.
+      available.length === 0 ? <EmptyState icon="music"
+        title={folders.length ? 'Нет доступных треков' : 'Здесь появится ваша музыка'}>
+        {folders.length ? 'Подключите папки с музыкой и нажмите «Обновить».' :
+          'Добавьте папку с файлами MP3, AAC, M4A, FLAC, WAV, Ogg, Opus или WebM.'}
       </EmptyState> : <>
         <div className="library-tools">
           <label className="search-control">
@@ -131,7 +140,7 @@ export function Library({ tracks, loading, loadFailed, retryLoad, scan, notice, 
             </tr></thead>
             <tbody>{shown.slice(page * pageSize, (page + 1) * pageSize).map(track => {
               const current = track.id === activeId
-              return <tr key={track.id} data-current={current} data-unavailable={!track.available}>
+              return <tr key={track.id} data-current={current}>
                 <td><button type="button" className="track-button" disabled={!ready} onClick={() => select(track.id)}
                   aria-label={track.title} aria-current={current ? 'true' : undefined} title={track.title}>
                   <span className="track-cover">
@@ -141,7 +150,6 @@ export function Library({ tracks, loading, loadFailed, retryLoad, scan, notice, 
                   <span className="track-text">
                     <span className="track-name truncate">{track.title}</span>
                     <span className="track-artist truncate" title={track.artist ?? undefined}>{track.artist ?? 'Неизвестный исполнитель'}</span>
-                    {!track.available && <span className="unavailable">Файл недоступен</span>}
                   </span>
                 </button></td>
                 <td className="album-column truncate" title={track.album ?? undefined}>{track.album ?? '—'}</td>
@@ -150,10 +158,10 @@ export function Library({ tracks, loading, loadFailed, retryLoad, scan, notice, 
                 <td><div className="track-actions">
                   <LikeButton label={'Лайк: ' + track.title} title="Лайк" aria-pressed={likedIds.has(track.id)}
                     disabled={likeDisabled} onClick={() => toggleLike(track.id)} />
-                  <TrackQueueActions title={track.title} disabled={!track.available || !ready}
+                  <TrackQueueActions title={track.title} disabled={!ready}
                     add={next => addToQueue(track.id, next)} />
                   <IconButton icon="addToPlaylist" label={'Добавить в плейлист: ' + track.title}
-                    title="Добавить в плейлист" disabled={!track.available} onClick={() => addToPlaylist(track.id)} />
+                    title="Добавить в плейлист" onClick={() => addToPlaylist(track.id)} />
                 </div></td>
               </tr>
             })}</tbody>

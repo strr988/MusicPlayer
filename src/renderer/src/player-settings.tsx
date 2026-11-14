@@ -103,7 +103,7 @@ function InterfaceSettings({ disco, cursor }: { disco: ReturnType<typeof useDisc
       <input type="checkbox" role="switch" checked={disco.enabled ?? false} disabled={disco.enabled === null || disco.saving}
         onChange={event => void disco.change(event.currentTarget.checked)} />
     </label>
-    <p className="muted">Мягкие волны пульсируют под басовые удары.</p>
+    <p className="muted">Цветное свечение меняет яркость в такт музыке.</p>
     {disco.error && <p role="alert">{disco.error}</p>}
   </section>
 }

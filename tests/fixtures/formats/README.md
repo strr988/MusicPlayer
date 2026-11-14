@@ -17,3 +17,4 @@ ffmpeg -f lavfi -i sine=frequency=440:sample_rate=44100:duration=0.5 -c:a CODEC 
 | opus | libopus |
 | webm | libopus |
 | alac.m4a | alac |
+| flac.m4a | flac (add `-strict experimental -f mp4` before the output path) |
