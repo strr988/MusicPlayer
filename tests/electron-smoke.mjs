@@ -351,8 +351,10 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     await waitFor(`${ready(scale)} && ${selector(scale)}.value === '125'`, '125% saved')
     player.setSize(1100, 760)
 
-    await run('document.querySelector(".disco-setting input").click()')
-    await waitFor('!!document.querySelector(".shell > .disco-layer")', 'disco enabled')
+    await waitFor('!!document.querySelector(".disco-setting .disco-button:enabled")', 'disco setting is ready')
+    await click('Диско-режим')
+    await waitFor('!!document.querySelector(".disco-setting .disco-button[aria-pressed=true]") && !!document.querySelector(".shell > .disco-layer")',
+      'disco enabled from settings')
     await click('Библиотека')
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] })
     await click(importLabel)

@@ -17,14 +17,6 @@ export function SleepMenu({ playback }: { playback: ReturnType<typeof usePlaybac
   </>
 }
 
-export function SleepPanel({ playback }: { playback: ReturnType<typeof usePlayback> }) {
-  const [open, setOpen] = useState(false)
-  return <details className="sleep-panel" onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary>Таймер сна{playback.sleep ? ' · включён' : ''}</summary>
-    {open && <SleepControls playback={playback} />}
-  </details>
-}
-
 function SleepControls({ playback }: { playback: ReturnType<typeof usePlayback> }) {
   const { sleep, changeSleep, track, currentEntryId, loading } = playback
   const [minutes, setMinutes] = useState('')

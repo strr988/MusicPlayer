@@ -44,6 +44,7 @@ export async function verifyPlayerExperience({ player, folder, run, click, waitF
   if (v8) {
     const cursor = 'document.querySelector(`select.settings-input:has(option[value=system])`)'
     await waitFor(cursor + ' && !' + cursor + '.disabled', 'cursor settings loaded')
+    assert.equal(await run(cursor + '.querySelector("option[value=system]").textContent'), 'Системный')
     const selectCursor = id => run(cursor + '.value = ' + JSON.stringify(id) + '; ' + cursor + '.dispatchEvent(new Event("change", {bubbles:true}))')
     for (const id of ['system', 'contrast']) {
       await selectCursor(id)
@@ -199,8 +200,17 @@ export async function verifyPlayerExperience({ player, folder, run, click, waitF
   }
   await verifyFullPlayer({ player, run, click, waitFor, waitForAudio, mp3, flac, screenshotFolder, v8 })
 
-  await click('Настройки')
-  await click('Открыть мини-плеер')
+  if (v8) {
+    await click('На весь экран')
+    await waitFor('!!document.querySelector(".full-player[open] .full-cover-actions")', 'fullscreen controls ready')
+    await click('Дополнительно')
+    await waitFor('!!document.querySelector("#full-player-menu:popover-open button[aria-label=\\"Открыть мини-плеер\\"]")',
+      'mini player icon visible in fullscreen actions')
+    await run('document.querySelector(`#full-player-menu button[aria-label="Открыть мини-плеер"]`).click()', true)
+  } else {
+    await click('Настройки')
+    await click('Открыть мини-плеер')
+  }
   const miniDeadline = Date.now() + 5000
   while ((!getMini()?.isVisible() || player.isVisible()) && Date.now() < miniDeadline) await delay(40)
   const mini = getMini()
@@ -371,6 +381,7 @@ async function verifyFullPlayer({ player, run, click, waitFor, waitForAudio, mp3
     await hover('document.querySelector(".player-volume button")')
     await waitFor(`getComputedStyle(${mainVolume}.parentElement).opacity === "1"`, 'hover reveals main volume')
     assert.equal(await run(`getComputedStyle(${mainVolume}).writingMode`), 'vertical-lr')
+    assert.equal(await run(`getComputedStyle(${mainVolume}.parentElement, "::before").content`), 'none')
   }
   await hover(opener)
   await waitFor('getComputedStyle(document.querySelector(".player-cover-expand")).opacity === "1"', 'cover exposes fullscreen on hover')
@@ -425,13 +436,16 @@ async function verifyFullPlayer({ player, run, click, waitFor, waitForAudio, mp3
   await run(`${modal}.querySelector(".sound-menu").hidePopover()`)
   if (v8) {
     await press('Дополнительно')
-    await waitFor('!!document.querySelector("#full-player-menu .sleep-panel") && !!document.querySelector("#full-player-menu .disco-setting input")', 'fullscreen actions have timer and disco')
-    const timer = 'document.querySelector("#full-player-menu .sleep-panel summary")'
-    await run(timer + '.click()')
-    await waitFor('!!document.querySelector("#full-player-menu .sleep-controls")', 'timer expands in fullscreen menu')
-    await run(timer + '.click()')
-    await waitFor('!!document.querySelector("#full-player-menu:popover-open .disco-setting") && !document.querySelector("#full-player-menu .sleep-controls")', 'collapsing timer keeps fullscreen menu populated')
-    await run('document.querySelector("#full-player-menu .disco-setting input").click()')
+    await waitFor('document.querySelectorAll("#full-player-menu:popover-open .full-player-menu-actions > button").length === 3',
+      'fullscreen actions have three icons')
+    const timer = control('Таймер сна')
+    await run(timer + '.click()', true)
+    await waitFor('!!document.querySelector("#full-player-menu .sleep-menu:popover-open .sleep-controls")', 'timer icon opens fullscreen timer')
+    await run(timer + '.click()', true)
+    await waitFor('!!document.querySelector("#full-player-menu:popover-open .disco-button") && !document.querySelector("#full-player-menu .sleep-menu:popover-open")',
+      'closing timer keeps fullscreen actions open')
+    await press('Диско-режим')
+    await waitFor(control('Диско-режим') + '.getAttribute("aria-pressed") === "true"', 'disco icon indicates active mode')
     await run('document.querySelector("#full-player-menu").hidePopover()')
     const glow = stage + '.querySelector(".disco-layer")'
     await waitFor(`!!${glow}`, 'disco enabled from fullscreen menu')

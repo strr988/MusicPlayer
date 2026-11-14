@@ -3,6 +3,8 @@ import type { ComponentProps, ReactNode } from 'react'
 
 const drawings = {
   timer: <path d="M9 3h6m-3 7v4l2 1m4-8 2-2M20 14a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z" />,
+  disco: <><circle cx="11" cy="14" r="7" /><ellipse cx="11" cy="14" rx="3" ry="7" />
+    <path d="M4 14h14m-7-7V3m-4 15h8M19 3v4m-2-2h4" /></>,
   music: <><path d="M9 18V5l11-2v13M9 9l11-2" /><ellipse cx="6" cy="18" rx="3" ry="2" /><ellipse cx="17" cy="16" rx="3" ry="2" /></>,
   library: <><rect x="3" y="4" width="4" height="16" rx="1" /><rect x="10" y="4" width="4" height="16" rx="1" /><path d="m17 5 4 14" /></>,
   wave: <path d="M3 10v4m4-8v12m5-15v18m5-14v10m4-7v4" />,

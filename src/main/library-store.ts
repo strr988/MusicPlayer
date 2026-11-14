@@ -136,7 +136,7 @@ function migrateAudioFormats(db: DatabaseSync): void {
 }
 
 export type CursorImage = { png: Uint8Array<ArrayBuffer>; x: number; y: number }
-const cursorLabels = { mustplay: 'mustplay', contrast: 'Контрастный', system: 'Системный (без кастомного)' }
+const cursorLabels = { mustplay: 'mustplay', contrast: 'Контрастный', system: 'Системный' }
 
 export interface LocalSource {
   id: string

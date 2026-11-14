@@ -1,6 +1,14 @@
 import { useEffect, useEffectEvent, useState } from 'react'
 import type { Ref } from 'react'
 import type { AudioEffects } from './audio-effects'
+import { IconButton } from './icons'
+
+export function DiscoButton({ enabled, saving, change }: ReturnType<typeof useDiscoMode>) {
+  return <IconButton icon="disco" label="Диско-режим" className="disco-button"
+    title={enabled ? 'Выключить диско-режим' : 'Включить диско-режим'}
+    aria-pressed={enabled ?? false} disabled={enabled === null || saving}
+    onClick={() => void change(!enabled)} />
+}
 
 export function DiscoLayer({ ref }: { ref: Ref<HTMLDivElement> }) {
   return <div className="disco-layer" ref={ref} aria-hidden="true"><i /><i /><i /></div>

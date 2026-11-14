@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { defaultWavePulse, interfaceScales, maxWavePulse, shortcutActions } from '../../shared/contracts'
 import type { InterfaceScale, ShortcutAction, ShortcutBinding, ShortcutBindings } from '../../shared/contracts'
 import type { useCursorSettings } from './cursor'
-import type { useDiscoMode } from './disco'
+import { DiscoButton, type useDiscoMode } from './disco'
 import { captureShortcut } from './shortcut-capture'
 
 const shortcutLabels: Record<ShortcutAction, string> = {
@@ -98,12 +98,13 @@ function InterfaceSettings({ disco, cursor }: { disco: ReturnType<typeof useDisc
     </div>
     <p className="muted">Выберите JSON-пресет mustplay. Чтобы вернуть курсор Windows, выберите «Системный».</p>
     {cursor.error && <p role="alert">{cursor.error}</p>}
-    <label className="settings-option disco-setting">
-      <span>Диско-режим</span>
-      <input type="checkbox" role="switch" checked={disco.enabled ?? false} disabled={disco.enabled === null || disco.saving}
-        onChange={event => void disco.change(event.currentTarget.checked)} />
-    </label>
-    <p className="muted">Цветное свечение меняет яркость в такт музыке.</p>
+    <div className="settings-option disco-setting">
+      <div>
+        <p>Диско-режим</p>
+        <p className="muted">Цветное свечение меняет яркость в такт музыке.</p>
+      </div>
+      <DiscoButton {...disco} />
+    </div>
     {disco.error && <p role="alert">{disco.error}</p>}
   </section>
 }

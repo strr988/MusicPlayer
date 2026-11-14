@@ -8,8 +8,8 @@ import type { usePlayback } from './playback'
 import { QueuePanel } from './queue-panel'
 import { Timeline } from './timeline'
 import { SoundMenu } from './sound-menu'
-import { SleepPanel } from './sleep-menu'
-import type { useDiscoMode } from './disco'
+import { SleepMenu } from './sleep-menu'
+import { DiscoButton, type useDiscoMode } from './disco'
 import { VolumeControl } from './volume-control'
 
 function coverTint(image: HTMLImageElement): string | undefined {
@@ -69,7 +69,6 @@ function FullPlayerContent({ playback, hasTracks, liked, likeDisabled, toggleLik
   const queueClose = useRef<HTMLButtonElement>(null)
   const exit = useRef<HTMLButtonElement>(null)
   const more = useRef<HTMLDivElement>(null)
-  const [moreOpen, setMoreOpen] = useState(false)
   const { track, loading, playing, volume } = playback
   const url = track?.artworkUrl
   useLayoutEffect(() => { exit.current?.focus() }, [])
@@ -135,20 +134,16 @@ function FullPlayerContent({ playback, hasTracks, liked, likeDisabled, toggleLik
         <QueuePanel id="full-playback-queue" playback={playback} open close={closeQueue} closeButton={queueClose} />
       </div>}
     </div>
-    <div ref={more} id="full-player-menu" className="sound-menu full-player-menu" popover="auto"
-      onToggle={event => {
-        if (event.target === event.currentTarget) setMoreOpen(event.newState === 'open')
-      }}>
-      {moreOpen && <>
-        <SleepPanel playback={playback} />
-        <label className="sound-control disco-setting">
-          <span>Диско-режим</span>
-          <input type="checkbox" role="switch" checked={disco.enabled ?? false} disabled={disco.enabled === null || disco.saving}
-            onChange={event => void disco.change(event.currentTarget.checked)} />
-        </label>
-        {disco.error && <p role="alert">{disco.error}</p>}
-        <button type="button" className="secondary" onClick={() => { more.current?.hidePopover(); openMini() }}>Открыть мини-плеер</button>
-      </>}
+    <div ref={more} id="full-player-menu" className="sound-menu full-player-menu" popover="auto" aria-label="Дополнительно">
+      <div className="full-player-menu-actions" role="group" aria-label="Действия плеера">
+        <SleepMenu playback={playback} />
+        <IconButton icon="mini" label="Открыть мини-плеер" onClick={() => {
+          more.current?.hidePopover()
+          openMini()
+        }} />
+        <DiscoButton {...disco} />
+      </div>
+      {disco.error && <p role="alert">{disco.error}</p>}
     </div>
   </>
 }
